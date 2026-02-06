@@ -1,81 +1,74 @@
-import { promises as fs } from "fs";
+// src/lib/orderStore.ts
+import fs from "fs";
 import path from "path";
+
+export type OrderStatus = "pending" | "in_progress" | "completed";
 
 export type StoredOrderItem = {
   id: string;
   name: string;
-  qty: number;
   unitPrice: number;
-  uploadUrl?: string | null;
-  customText?: string | null;
-  font?: string | null;
+  qty: number;
+  lineTotal: number;
+  uploadUrl?: string;
+  customText?: string;
+  font?: string;
 };
 
 export type StoredOrder = {
-  id: string; // our internal id
-  createdAt: string; // ISO string
-  status: "pending" | "in_progress" | "completed";
-  customerEmail: string;
-  shippingZone: "UK" | "INTL";
+  id: string;
+  email: string;
+  shippingZone: string;
   shippingCost: number;
   subtotal: number;
   total: number;
-  stripeSessionId?: string;
-  stripePaymentIntentId?: string;
+  status: OrderStatus;
+  createdAt: string;
+  stripeSessionId: string;
   items: StoredOrderItem[];
 };
 
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
+const DATA_DIR = path.join(process.cwd(), "data");
 const ORDERS_FILE = path.join(DATA_DIR, "orders.json");
 
-async function ensureDataFile() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  try {
-    await fs.access(ORDERS_FILE);
-  } catch {
-    await fs.writeFile(ORDERS_FILE, JSON.stringify({ orders: [] }, null, 2), "utf8");
-  }
+function ensureStore() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+  if (!fs.existsSync(ORDERS_FILE)) fs.writeFileSync(ORDERS_FILE, "[]");
 }
 
-export async function readOrders(): Promise<StoredOrder[]> {
-  await ensureDataFile();
-  const raw = await fs.readFile(ORDERS_FILE, "utf8");
-  const parsed = JSON.parse(raw || "{}");
-  return Array.isArray(parsed?.orders) ? (parsed.orders as StoredOrder[]) : [];
+export function readOrders(): StoredOrder[] {
+  ensureStore();
+  return JSON.parse(fs.readFileSync(ORDERS_FILE, "utf8"));
 }
 
-export async function writeOrders(orders: StoredOrder[]) {
-  await ensureDataFile();
-  await fs.writeFile(ORDERS_FILE, JSON.stringify({ orders }, null, 2), "utf8");
+export function writeOrders(orders: StoredOrder[]) {
+  ensureStore();
+  fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
 }
 
-export async function listOrders(): Promise<StoredOrder[]> {
-  const orders = await readOrders();
-  // newest first
-  return orders.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+export function saveOrder(order: StoredOrder) {
+  const orders = readOrders();
+  orders.unshift(order);
+  writeOrders(orders);
 }
 
-export async function saveOrder(order: StoredOrder): Promise<void> {
-  const orders = await readOrders();
+export function listOrders() {
+  return readOrders();
+}
 
-  // Deduplicate: if we already saved an order for this Stripe session, update it
-  const idx = order.stripeSessionId
-    ? orders.findIndex((o) => o.stripeSessionId === order.stripeSessionId)
-    : -1;
+export function updateOrderStatus(
+  orderId: string,
+  status: OrderStatus
+): { ok: true } | { ok: false; message: string } {
+  const orders = readOrders();
+  const order = orders.find((o) => o.id === orderId);
 
-  if (idx >= 0) {
-    orders[idx] = { ...orders[idx], ...order };
-  } else {
-    orders.push(order);
+  if (!order) {
+    return { ok: false, message: "Order not found" };
   }
 
-  await writeOrders(orders);
-}
+  order.status = status;
+  writeOrders(orders);
 
-export async function updateOrderStatus(orderId: string, status: StoredOrder["status"]) {
-  const orders = await readOrders();
-  const idx = orders.findIndex((o) => o.id === orderId);
-  if (idx === -1) return;
-  orders[idx] = { ...orders[idx], status };
-  await writeOrders(orders);
+  return { ok: true };
 }
