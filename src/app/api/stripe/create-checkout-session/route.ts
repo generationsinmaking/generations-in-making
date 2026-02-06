@@ -28,7 +28,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY" }, { status: 500 });
     }
 
-    const stripe = new Stripe(stripeSecret, { apiVersion: "2024-06-20" });
+    // ✅ Don't pin apiVersion – avoids TypeScript mismatch on Vercel
+    const stripe = new Stripe(stripeSecret);
 
     const body = await req.json().catch(() => ({}));
     const items: CartItem[] = Array.isArray(body.items) ? body.items : [];
@@ -65,7 +66,6 @@ export async function POST(req: Request) {
 
     const origin = req.headers.get("origin") || process.env.SITE_URL || "http://localhost:3000";
 
-    // ✅ what webhook + admin will save
     const meta = {
       shippingZone,
       shippingCost: (ship / 100).toFixed(2),

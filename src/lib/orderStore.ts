@@ -1,5 +1,5 @@
 // src/lib/orderStore.ts
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
 
 export type OrderStatus = "pending" | "in_progress" | "completed";
@@ -7,68 +7,85 @@ export type OrderStatus = "pending" | "in_progress" | "completed";
 export type StoredOrderItem = {
   id: string;
   name: string;
-  unitPrice: number;
   qty: number;
-  lineTotal: number;
-  uploadUrl?: string;
-  customText?: string;
-  font?: string;
+  unitPrice: number;
+  uploadUrl?: string | null;
+  customText?: string | null;
+  font?: string | null;
 };
 
 export type StoredOrder = {
   id: string;
-  email: string;
-  shippingZone: string;
+  createdAt: string;
+  status: OrderStatus;
+
+  // Keep both for compatibility
+  email: string; // ✅ canonical field
+  customerEmail?: string; // ✅ backwards compatible
+
+  shippingZone: "UK" | "INTL";
   shippingCost: number;
   subtotal: number;
   total: number;
-  status: OrderStatus;
-  createdAt: string;
+
   stripeSessionId: string;
   items: StoredOrderItem[];
 };
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const ORDERS_FILE = path.join(DATA_DIR, "orders.json");
+function storePath() {
+  // ✅ On Vercel you can only write to /tmp
+  // You can override locally using ORDER_STORE_PATH=data/orders.json
+  const p = process.env.ORDER_STORE_PATH || "/tmp/gim-orders.json";
 
-function ensureStore() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-  if (!fs.existsSync(ORDERS_FILE)) fs.writeFileSync(ORDERS_FILE, "[]");
+  // If user sets a relative path (like data/orders.json), resolve from project root
+  if (p.startsWith("/") || p.includes(":")) return p;
+  return path.join(process.cwd(), p);
 }
 
-export function readOrders(): StoredOrder[] {
-  ensureStore();
-  return JSON.parse(fs.readFileSync(ORDERS_FILE, "utf8"));
+async function ensureDirForFile(file: string) {
+  const dir = path.dirname(file);
+  await fs.mkdir(dir, { recursive: true }).catch(() => {});
 }
 
-export function writeOrders(orders: StoredOrder[]) {
-  ensureStore();
-  fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
+export async function readOrders(): Promise<StoredOrder[]> {
+  const file = storePath();
+  try {
+    const raw = await fs.readFile(file, "utf8");
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data)) return [];
+    return data as StoredOrder[];
+  } catch {
+    return [];
+  }
 }
 
-export function saveOrder(order: StoredOrder) {
-  const orders = readOrders();
-  orders.unshift(order);
-  writeOrders(orders);
+export async function writeOrders(orders: StoredOrder[]) {
+  const file = storePath();
+  await ensureDirForFile(file);
+  await fs.writeFile(file, JSON.stringify(orders, null, 2), "utf8");
 }
 
-export function listOrders() {
+export async function saveOrder(order: StoredOrder) {
+  const orders = await readOrders();
+
+  // Replace if same id exists
+  const idx = orders.findIndex((o) => o.id === order.id);
+  if (idx >= 0) orders[idx] = order;
+  else orders.unshift(order);
+
+  await writeOrders(orders);
+}
+
+export async function listOrders(): Promise<StoredOrder[]> {
   return readOrders();
 }
 
-export function updateOrderStatus(
-  orderId: string,
-  status: OrderStatus
-): { ok: true } | { ok: false; message: string } {
-  const orders = readOrders();
-  const order = orders.find((o) => o.id === orderId);
+export async function updateOrderStatus(orderId: string, status: OrderStatus) {
+  const orders = await readOrders();
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) return false;
 
-  if (!order) {
-    return { ok: false, message: "Order not found" };
-  }
-
-  order.status = status;
-  writeOrders(orders);
-
-  return { ok: true };
+  orders[idx] = { ...orders[idx], status };
+  await writeOrders(orders);
+  return true;
 }

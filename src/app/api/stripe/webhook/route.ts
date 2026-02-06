@@ -1,12 +1,13 @@
+// src/app/api/stripe/webhook/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
-import { saveOrder, type StoredOrder, type StoredOrderItem } from "@/lib/orderStore";
+import { saveOrder, type StoredOrderItem, type StoredOrder } from "@/lib/orderStore";
 
 export const runtime = "nodejs";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
-  apiVersion: "2024-06-20",
+  // ✅ IMPORTANT: don’t hardcode apiVersion here for Vercel type safety
 });
 
 const resend = new Resend(process.env.RESEND_API_KEY || "");
@@ -26,7 +27,6 @@ function renderInvoiceEmail(order: {
   return `
   <div style="font-family: Arial, sans-serif; background:#f6f7fb; padding:24px">
     <div style="max-width:700px;margin:auto;background:#ffffff;border-radius:12px;padding:24px">
-      
       <h1 style="margin-top:0">Thank you for your order 💙</h1>
       <p>Your order <strong>${order.id}</strong> has been received.</p>
 
@@ -69,13 +69,10 @@ function renderInvoiceEmail(order: {
       <hr />
 
       <p style="font-size:14px;color:#555">
-        We’ll begin working on your item shortly.  
-        If you have any questions, reply to this email.
+        We’ll begin working on your item shortly. If you have any questions, reply to this email.
       </p>
 
-      <p style="margin-top:24px;font-weight:bold">
-        Generations in Making
-      </p>
+      <p style="margin-top:24px;font-weight:bold">Generations in Making</p>
     </div>
   </div>
   `;
@@ -124,15 +121,20 @@ export async function POST(req: Request) {
     const shippingCost = Number(meta?.shippingCost || 0);
     const total = subtotal + shippingCost;
 
-    const order = {
+    const order: StoredOrder = {
       id: `GIM-${session.id.slice(-6).toUpperCase()}`,
       createdAt: new Date().toISOString(),
-      status: "pending" as const,
+      status: "pending",
+
+      // ✅ both fields, so no more type errors anywhere
+      email,
       customerEmail: email,
-      shippingZone: meta?.shippingZone || "UK",
+
+      shippingZone: meta?.shippingZone === "INTL" ? "INTL" : "UK",
       shippingCost,
       subtotal,
       total,
+
       stripeSessionId: session.id,
       items,
     };
@@ -145,7 +147,14 @@ export async function POST(req: Request) {
       from: process.env.ORDER_FROM_EMAIL || "Generations in Making <onboarding@resend.dev>",
       to: email,
       subject: `Your order ${order.id} – Generations in Making`,
-      html: renderInvoiceEmail(order),
+      html: renderInvoiceEmail({
+        id: order.id,
+        customerEmail: email,
+        items: order.items,
+        subtotal: order.subtotal,
+        shippingCost: order.shippingCost,
+        total: order.total,
+      }),
     });
 
     return NextResponse.json({ received: true });
