@@ -2,274 +2,292 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useState } from "react";
-import { products } from "@/lib/products";
+import { useMemo, useState } from "react";
 import { addToCart } from "@/lib/cart";
 
-// Fonts you wanted (names shown in dropdown)
-const WALLET_FONTS = ["Lato", "Charm", "Griffy", "Berkshire Swash"];
+type ProductOption = {
+  id: string;
+  label: string;
+  price: number;
+  requiresText?: boolean;
+};
 
-export default function Shop() {
-  const [selectedOption, setSelectedOption] = useState<Record<string, string>>(() => {
-    const initial: Record<string, string> = {};
-    for (const p of products) initial[p.id] = p.options[0]?.id || "";
-    return initial;
+type Product = {
+  id: string;
+  name: string;
+  image: string;
+  options: ProductOption[];
+  showFontGuideImage?: string; // optional helper image
+};
+
+const FONTS = ["Lato", "Charm", "Griffy", "Berkshire Swash"] as const;
+
+const PRODUCTS: Product[] = [
+  {
+    id: "steel-photo",
+    name: "304 Stainless Steel Photo",
+    image: "/images/steel-photo.jpg",
+    options: [
+      { id: "steel-100x100", label: "100mm × 100mm — £20", price: 20 },
+      { id: "steel-100x200", label: "100mm × 200mm — £40", price: 40 },
+    ],
+  },
+  {
+    id: "metal-wallet-photo",
+    name: "Metal Wallet Photo Card",
+    image: "/images/wallet-photo.jpg",
+    // If you add a font guide image into /public/images, set it here:
+    // showFontGuideImage: "/images/wallet-fonts.jpg",
+    options: [
+      { id: "wallet-photo-only", label: "Photo only — £4", price: 4 },
+      { id: "wallet-photo-text", label: "Photo + custom text — £5.50", price: 5.5, requiresText: true },
+    ],
+  },
+];
+
+function money(n: number) {
+  return `£${n.toFixed(2)}`;
+}
+
+export default function ShopPage() {
+  const [selectedOptionId, setSelectedOptionId] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    for (const p of PRODUCTS) init[p.id] = p.options[0]?.id || "";
+    return init;
   });
 
   const [walletText, setWalletText] = useState("");
-  const [walletFont, setWalletFont] = useState(WALLET_FONTS[0]);
+  const [walletFont, setWalletFont] = useState<(typeof FONTS)[number]>("Lato");
+  const [error, setError] = useState<string>("");
 
-  function money(n: number) {
-    return `£${n.toFixed(2)}`;
+  const selectedOptionByProduct = useMemo(() => {
+    const map: Record<string, ProductOption | undefined> = {};
+    for (const p of PRODUCTS) {
+      map[p.id] = p.options.find((o) => o.id === selectedOptionId[p.id]);
+    }
+    return map;
+  }, [selectedOptionId]);
+
+  function handleAdd(product: Product) {
+    setError("");
+
+    const opt = selectedOptionByProduct[product.id];
+    if (!opt) {
+      setError("Please choose an option.");
+      return;
+    }
+
+    const isWallet = product.id === "metal-wallet-photo";
+    const needsText = isWallet && !!opt.requiresText;
+
+    const cleanText = walletText.trim();
+    if (needsText && !cleanText) {
+      setError("Please type the custom text for the wallet card.");
+      return;
+    }
+
+    // ✅ CartItem DOES NOT support optionLabel in your project
+    // So we include the option label inside the item name instead.
+    const displayName = `${product.name} (${opt.label.replace(/ — £.*$/, "")})`;
+
+    addToCart({
+      id: product.id,
+      name: displayName,
+      qty: 1,
+      unitPrice: opt.price,
+      optionId: opt.id,
+      customText: needsText ? cleanText : undefined,
+      font: needsText ? walletFont : undefined,
+    });
   }
 
   return (
     <main style={{ minHeight: "100vh", background: "#061225", color: "#eaf2ff" }}>
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
-        <header style={{ display: "flex", justifyContent: "space-between" }}>
+        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <Link href="/">← Home</Link>
-          <Link href="/cart">Cart</Link>
+          <div style={{ display: "flex", gap: 16 }}>
+            <Link href="/cart">Cart</Link>
+            <Link href="/checkout">Checkout</Link>
+          </div>
         </header>
 
-        <h1 style={{ marginTop: 30 }}>Shop</h1>
+        <h1 style={{ marginTop: 22, fontSize: 44, letterSpacing: -0.5 }}>Shop</h1>
+
+        {error ? (
+          <div
+            style={{
+              background: "#3a1220",
+              border: "1px solid #5a2335",
+              color: "#ffd4df",
+              padding: 12,
+              borderRadius: 12,
+              marginTop: 12,
+              marginBottom: 12,
+            }}
+          >
+            {error}
+          </div>
+        ) : null}
 
         <div
           style={{
-            marginTop: 18,
             display: "grid",
             gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-            gap: 20,
+            gap: 18,
+            marginTop: 18,
           }}
         >
-          {products.map((p) => {
-            const optionId = selectedOption[p.id];
-            const opt = p.options.find((o) => o.id === optionId) || p.options[0];
-            const needsText = !!opt?.requiresText;
+          {PRODUCTS.map((p) => {
+            const opt = selectedOptionByProduct[p.id];
+            const isWallet = p.id === "metal-wallet-photo";
+            const needsText = isWallet && !!opt?.requiresText;
 
             return (
               <div
                 key={p.id}
                 style={{
                   background: "#0b1e3a",
+                  padding: 16,
                   borderRadius: 18,
                   border: "1px solid #1b2b4d",
-                  overflow: "hidden",
                 }}
               >
-                {/* Product image (NOT CROPPED) */}
                 <div
                   style={{
-                    position: "relative",
-                    width: "100%",
-                    height: 340,
-                    background: "#071a33",
+                    borderRadius: 14,
+                    overflow: "hidden",
+                    border: "1px solid #20365f",
+                    background: "#061225",
                   }}
                 >
-                  <Image
-                    src={p.image}
-                    alt={p.name}
-                    fill
-                    style={{
-                      objectFit: "contain", // <-- this stops cropping
-                      padding: 14,
-                    }}
-                  />
+                  {/* Less cropping: contain */}
+                  <div style={{ position: "relative", width: "100%", height: 340 }}>
+                    <Image
+                      src={p.image}
+                      alt={p.name}
+                      fill
+                      sizes="(max-width: 768px) 100vw, 520px"
+                      style={{ objectFit: "contain" }}
+                      priority={p.id === "steel-photo"}
+                    />
+                  </div>
                 </div>
 
-                {/* View full image link */}
-                <div style={{ padding: "10px 16px 0" }}>
-                  <a
-                    href={p.image}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ color: "#a9c0e6", fontSize: 13, textDecoration: "underline" }}
-                  >
-                    View full image
-                  </a>
-                </div>
+                <h2 style={{ marginTop: 14, fontSize: 20 }}>{p.name}</h2>
 
-                <div style={{ padding: 16 }}>
-                  <h3 style={{ margin: "0 0 6px" }}>{p.name}</h3>
-                  <p style={{ margin: "0 0 12px", color: "#a9c0e6" }}>{p.description}</p>
+                <label style={{ display: "block", marginTop: 10, fontSize: 14, opacity: 0.95 }}>
+                  Choose option:
+                </label>
+                <select
+                  value={selectedOptionId[p.id]}
+                  onChange={(e) => setSelectedOptionId((s) => ({ ...s, [p.id]: e.target.value }))}
+                  style={{
+                    marginTop: 8,
+                    width: "100%",
+                    padding: 10,
+                    borderRadius: 12,
+                    background: "#ffffff",
+                    color: "#000",
+                    border: "none",
+                  }}
+                >
+                  {p.options.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
 
-                  <select
-                    value={optionId}
-                    onChange={(e) =>
-                      setSelectedOption((prev) => ({ ...prev, [p.id]: e.target.value }))
-                    }
-                    style={{
-                      width: "100%",
-                      padding: 10,
-                      borderRadius: 12,
-                      border: "1px solid #1b2b4d",
-                      backgroundColor: "#ffffff",
-                      color: "#000000",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {p.options.map((o) => (
-                      <option key={o.id} value={o.id}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* Wallet custom text UI */}
-                  {p.id === "metal-wallet-photo" && needsText && (
-                    <div
-                      style={{
-                        marginTop: 12,
-                        padding: 12,
-                        borderRadius: 14,
-                        border: "1px solid #1b2b4d",
-                        background: "#071a33",
-                      }}
-                    >
-                      {p.fontGuideImage && (
-                        <div style={{ marginBottom: 10 }}>
-                          <div style={{ fontWeight: 800, marginBottom: 8 }}>
-                            Font guide (preview)
-                          </div>
-
-                          {/* Font guide image (NOT CROPPED) */}
-                          <div
-                            style={{
-                              position: "relative",
-                              width: "100%",
-                              height: 220,
-                              background: "#061225",
-                              borderRadius: 12,
-                              overflow: "hidden",
-                            }}
-                          >
-                            <Image
-                              src={p.fontGuideImage}
-                              alt="Font guide"
-                              fill
-                              style={{
-                                objectFit: "contain", // <-- not cropped
-                                padding: 10,
-                              }}
-                            />
-                          </div>
-
-                          <div style={{ marginTop: 8 }}>
-                            <a
-                              href={p.fontGuideImage}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{
-                                color: "#a9c0e6",
-                                fontSize: 13,
-                                textDecoration: "underline",
-                              }}
-                            >
-                              View font guide full size
-                            </a>
-                          </div>
-                        </div>
-                      )}
-
-                      <label style={{ display: "block", fontWeight: 700, marginBottom: 6 }}>
-                        Choose font
-                      </label>
-                      <select
-                        value={walletFont}
-                        onChange={(e) => setWalletFont(e.target.value)}
+                {isWallet ? (
+                  <div style={{ marginTop: 12 }}>
+                    {p.showFontGuideImage ? (
+                      <div
                         style={{
-                          width: "100%",
-                          padding: 10,
-                          borderRadius: 12,
-                          border: "1px solid #1b2b4d",
-                          backgroundColor: "#ffffff",
-                          color: "#000000",
-                          fontWeight: 600,
-                          marginBottom: 10,
+                          marginTop: 10,
+                          borderRadius: 14,
+                          overflow: "hidden",
+                          border: "1px solid #20365f",
+                          background: "#061225",
                         }}
                       >
-                        {WALLET_FONTS.map((f) => (
-                          <option key={f} value={f}>
-                            {f}
-                          </option>
-                        ))}
-                      </select>
-
-                      <label style={{ display: "block", fontWeight: 700, marginBottom: 6 }}>
-                        Personalisation text
-                      </label>
-                      <input
-                        value={walletText}
-                        onChange={(e) => setWalletText(e.target.value)}
-                        placeholder="Type the text you want on the card..."
-                        style={{
-                          width: "100%",
-                          padding: 10,
-                          borderRadius: 12,
-                          border: "1px solid #1b2b4d",
-                          backgroundColor: "#ffffff",
-                          color: "#000000",
-                        }}
-                      />
-
-                      <div style={{ marginTop: 8, color: "#a9c0e6", fontSize: 13 }}>
-                        Price: {money(opt?.price ?? 0)} (includes custom text)
+                        <div style={{ position: "relative", width: "100%", height: 220 }}>
+                          <Image
+                            src={p.showFontGuideImage}
+                            alt="Font guide"
+                            fill
+                            sizes="(max-width: 768px) 100vw, 520px"
+                            style={{ objectFit: "contain" }}
+                          />
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    ) : null}
 
-                  <button
-                    onClick={() => {
-                      if (!opt) return;
+                    {needsText ? (
+                      <>
+                        <label style={{ display: "block", marginTop: 12, fontSize: 14 }}>
+                          Personalisation text:
+                        </label>
+                        <input
+                          value={walletText}
+                          onChange={(e) => setWalletText(e.target.value)}
+                          placeholder="Type your text here…"
+                          style={{
+                            marginTop: 8,
+                            width: "100%",
+                            padding: 10,
+                            borderRadius: 12,
+                            border: "none",
+                          }}
+                        />
 
-                      // Require text if option requires it
-                      if (p.id === "metal-wallet-photo" && opt.requiresText) {
-                        if (!walletText.trim()) {
-                          alert("Please type the custom text before adding to cart.");
-                          return;
-                        }
-                      }
+                        <label style={{ display: "block", marginTop: 12, fontSize: 14 }}>
+                          Choose font:
+                        </label>
+                        <select
+                          value={walletFont}
+                          onChange={(e) => setWalletFont(e.target.value as (typeof FONTS)[number])}
+                          style={{
+                            marginTop: 8,
+                            width: "100%",
+                            padding: 10,
+                            borderRadius: 12,
+                            background: "#ffffff",
+                            color: "#000",
+                            border: "none",
+                          }}
+                        >
+                          {FONTS.map((f) => (
+                            <option key={f} value={f}>
+                              {f}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    ) : (
+                      <p style={{ marginTop: 10, opacity: 0.85, fontSize: 14 }}>
+                        (Select “Photo + custom text” to add text + font.)
+                      </p>
+                    )}
+                  </div>
+                ) : null}
 
-                      const displayName =
-                        opt?.label?.includes("—")
-                          ? `${p.name} (${opt.label.split("—")[0].trim()})`
-                          : `${p.name} (${opt.label})`;
-
-                      addToCart({
-                        id: p.id,
-                        name: displayName,
-                        unitPrice: opt.price,
-                        optionId: opt.id,
-                        personalisation:
-                          p.id === "metal-wallet-photo" && opt.requiresText
-                            ? walletText.trim()
-                            : undefined,
-                        font:
-                          p.id === "metal-wallet-photo" && opt.requiresText ? walletFont : undefined,
-                      });
-
-                      // reset wallet fields after add
-                      if (p.id === "metal-wallet-photo" && opt.requiresText) {
-                        setWalletText("");
-                        setWalletFont(WALLET_FONTS[0]);
-                      }
-
-                      alert("Added to cart!");
-                    }}
-                    style={{
-                      marginTop: 12,
-                      width: "100%",
-                      padding: "12px 14px",
-                      borderRadius: 12,
-                      border: "none",
-                      background: "#2f7bff",
-                      color: "white",
-                      fontWeight: 800,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Add to Cart
-                  </button>
-                </div>
+                <button
+                  onClick={() => handleAdd(p)}
+                  style={{
+                    marginTop: 14,
+                    width: "100%",
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "none",
+                    background: "#2f7bff",
+                    color: "white",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Add to Cart {opt ? `• ${money(opt.price)}` : ""}
+                </button>
               </div>
             );
           })}
