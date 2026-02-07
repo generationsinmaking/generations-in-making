@@ -1,23 +1,14 @@
 // src/app/api/admin/orders/route.ts
 import { NextResponse } from "next/server";
-import { getOrders } from "@/lib/orderStore";
+import { listOrders } from "@/lib/orderStore";
 
 export const runtime = "nodejs";
 
-function isAuthed(req: Request) {
-  const token = req.headers.get("x-admin-token") || "";
-  return !!process.env.ADMIN_TOKEN && token === process.env.ADMIN_TOKEN;
-}
-
-export async function GET(req: Request) {
+export async function GET() {
   try {
-    if (!isAuthed(req)) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const orders = await getOrders();
+    const orders = await listOrders(200);
     return NextResponse.json({ orders });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Server error" }, { status: 500 });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "Failed to load orders" }, { status: 500 });
   }
 }
