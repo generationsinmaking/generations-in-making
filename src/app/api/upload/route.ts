@@ -1,15 +1,15 @@
+// src/app/api/upload/route.ts
 import { NextResponse } from "next/server";
-import { mkdir, writeFile } from "fs/promises";
-import path from "path";
-import crypto from "crypto";
+import { put } from "@vercel/blob";
 
 export const runtime = "nodejs";
 
-// Only allow common image extensions
-function safeExt(filename: string) {
-  const ext = path.extname(filename || "").toLowerCase();
-  const allowed = new Set([".jpg", ".jpeg", ".png", ".webp"]);
-  return allowed.has(ext) ? ext : ".jpg";
+function safeName(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9.\-_]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 export async function POST(req: Request) {
@@ -21,35 +21,31 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
     }
 
-    // Basic size guard (10MB)
-    const maxBytes = 10 * 1024 * 1024;
-    if (file.size > maxBytes) {
-      return NextResponse.json({ error: "File too large (max 10MB)" }, { status: 400 });
+    // Basic validation (optional)
+    if (!file.type.startsWith("image/")) {
+      return NextResponse.json({ error: "Only image files are allowed" }, { status: 400 });
     }
 
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
+    const ext = safeName(file.name || "upload");
+    const path = `uploads/${Date.now()}-${crypto.randomUUID()}-${ext}`;
 
-    // Save under /public/uploads so it’s accessible in browser
-    const uploadsDir = path.join(process.cwd(), "public", "uploads");
-    await mkdir(uploadsDir, { recursive: true });
+    const blob = await put(path, file, {
+      access: "public",
+      contentType: file.type || "application/octet-stream",
+    });
 
-    const ext = safeExt(file.name);
-    const storedName = `${crypto.randomUUID()}${ext}`;
-    const fullPath = path.join(uploadsDir, storedName);
-
-    await writeFile(fullPath, buffer);
-
-    const url = `/uploads/${storedName}`;
-
+    // blob.url is a public URL (works on the live site)
     return NextResponse.json({
       ok: true,
-      url,
-      originalName: file.name,
-      storedName,
+      url: blob.url,
+      pathname: blob.pathname,
+      contentType: file.type,
       size: file.size,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Upload failed" }, { status: 500 });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message || "Upload failed" },
+      { status: 500 }
+    );
   }
 }
