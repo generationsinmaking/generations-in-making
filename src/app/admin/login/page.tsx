@@ -1,118 +1,119 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export default function AdminLoginPage() {
   const router = useRouter();
-  const [token, setToken] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const sp = useSearchParams();
 
-  async function handleLogin(e: React.FormEvent) {
+  const nextUrl = useMemo(() => sp.get("next") || "/admin/orders", [sp]);
+
+  const [token, setToken] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
+    setMsg(null);
     setLoading(true);
 
     try {
       const res = await fetch("/api/admin/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ token }),
       });
 
+      const data = await res.json().catch(() => ({}));
+
       if (!res.ok) {
-        throw new Error("Invalid admin token");
+        setMsg(data?.error || "Login failed");
+        setLoading(false);
+        return;
       }
 
-      // Store token locally for admin pages
-      localStorage.setItem("admin_token", token);
-
-      // Go to orders page
-      router.push("/admin/orders");
-    } catch (err) {
-      setError("Invalid admin token");
+      // success: API should set an httpOnly cookie
+      router.replace(nextUrl);
+      router.refresh();
+    } catch (err: any) {
+      setMsg(err?.message || "Something went wrong");
+    } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#0b1220",
-        padding: 24,
-      }}
-    >
-      <form
-        onSubmit={handleLogin}
+    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+      <div
         style={{
-          background: "#111a2e",
-          padding: 32,
-          borderRadius: 12,
           width: "100%",
-          maxWidth: 420,
-          color: "#fff",
-          boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
+          maxWidth: 520,
+          background: "rgba(255,255,255,0.06)",
+          border: "1px solid rgba(255,255,255,0.12)",
+          borderRadius: 16,
+          padding: 20,
         }}
       >
-        <h1 style={{ marginBottom: 8 }}>Admin Login</h1>
-        <p style={{ marginBottom: 24, color: "#9aa4bf" }}>
-          Enter your admin token
+        <h1 style={{ marginTop: 0, marginBottom: 6, fontSize: 32 }}>Admin Login</h1>
+        <p style={{ marginTop: 0, opacity: 0.8 }}>
+          Enter your admin token to access orders.
         </p>
 
-        <input
-          type="password"
-          placeholder="Admin token"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          required
-          style={{
-            width: "100%",
-            padding: "12px 14px",
-            borderRadius: 8,
-            border: "1px solid #2a355a",
-            background: "#0b1220",
-            color: "#fff",
-            marginBottom: 12,
-          }}
-        />
+        <form onSubmit={onSubmit} style={{ marginTop: 16, display: "grid", gap: 12 }}>
+          <label style={{ display: "grid", gap: 6 }}>
+            <span style={{ fontSize: 14, opacity: 0.9 }}>Admin token</span>
+            <input
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Enter admin token"
+              type="password"
+              autoComplete="current-password"
+              style={{
+                width: "100%",
+                padding: "12px 14px",
+                borderRadius: 12,
+                border: "1px solid rgba(255,255,255,0.18)",
+                background: "rgba(0,0,0,0.25)",
+                color: "white",
+                outline: "none",
+              }}
+            />
+          </label>
 
-        {error && (
-          <div
+          <button
+            type="submit"
+            disabled={loading || token.trim().length === 0}
             style={{
-              background: "#3b0d0d",
-              color: "#ffb4b4",
-              padding: 10,
-              borderRadius: 8,
-              marginBottom: 12,
-              fontSize: 14,
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: "none",
+              cursor: loading ? "not-allowed" : "pointer",
+              opacity: loading ? 0.7 : 1,
+              fontWeight: 700,
             }}
           >
-            {error}
-          </div>
-        )}
+            {loading ? "Logging in..." : "Login"}
+          </button>
 
-        <button
-          type="submit"
-          disabled={loading}
-          style={{
-            width: "100%",
-            padding: "12px 16px",
-            borderRadius: 8,
-            border: "none",
-            background: loading ? "#555" : "#2563eb",
-            color: "#fff",
-            fontWeight: 600,
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
-        >
-          {loading ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
+          {msg ? (
+            <div
+              style={{
+                background: "rgba(255,0,0,0.12)",
+                border: "1px solid rgba(255,0,0,0.25)",
+                padding: 12,
+                borderRadius: 12,
+              }}
+            >
+              {msg}
+            </div>
+          ) : null}
+
+          <div style={{ fontSize: 13, opacity: 0.75, lineHeight: 1.4 }}>
+            Tip: bookmark <code>/admin/login</code>. Don’t link it publicly.
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

@@ -1,4 +1,3 @@
-// src/app/api/admin/orders/route.ts
 import { NextResponse } from "next/server";
 import { listOrders } from "@/lib/orderStore";
 
@@ -6,9 +5,16 @@ export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const orders = await listOrders(200);
-    return NextResponse.json({ orders });
+    const orders = await listOrders();
+
+    // Optional: limit how many show in admin
+    const limited = orders.slice(0, 200);
+
+    return NextResponse.json({ orders: limited });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Failed to load orders" }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message || "Failed to load orders" },
+      { status: 500 }
+    );
   }
 }
