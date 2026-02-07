@@ -1,13 +1,16 @@
-export type OrderStatus = "pending" | "processing" | "shipped" | "cancelled" | "refunded";
+// src/lib/orderStore.ts
+import { Redis } from "@upstash/redis";
+
+export type OrderStatus = "pending" | "paid" | "processing" | "shipped" | "cancelled" | "refunded";
 
 export type StoredOrderItem = {
   id: string;
   name: string;
   qty: number;
   unitPrice: number;
-  uploadUrl: string | null;
-  customText: string | null;
-  font: string | null;
+  uploadUrl?: string | null;
+  customText?: string | null;
+  font?: string | null;
   optionId?: string | null;
   optionLabel?: string | null;
 };
@@ -16,53 +19,72 @@ export type StoredOrder = {
   id: string;
   createdAt: string;
   status: OrderStatus;
+
   customerEmail: string;
-  shippingZone: string;
+
+  // Shipping
+  shippingName?: string | null;
+  shippingPhone?: string | null;
+  shippingAddress?: {
+    line1?: string | null;
+    line2?: string | null;
+    city?: string | null;
+    state?: string | null;
+    postal_code?: string | null;
+    country?: string | null;
+  } | null;
+
+  shippingZone?: string | null;
   shippingCost: number;
+
   subtotal: number;
   total: number;
-  stripeSessionId: string;
-  items: StoredOrderItem[];
 
-  // ✅ New: stored shipping address (HTML with <br/>)
-  shippingAddressHtml?: string;
+  stripeSessionId: string;
+
+  items: StoredOrderItem[];
 };
 
-// Simple JSON-file store (works locally). If you later move to a DB, this stays similar.
-const ORDERS_PATH = "data/orders.json";
-
-async function readOrders(): Promise<StoredOrder[]> {
-  try {
-    const fs = await import("fs/promises");
-    const raw = await fs.readFile(ORDERS_PATH, "utf8");
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+function getRedis() {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) throw new Error("Missing Upstash Redis env vars (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN)");
+  return new Redis({ url, token });
 }
 
-async function writeOrders(orders: StoredOrder[]) {
-  const fs = await import("fs/promises");
-  await fs.mkdir("data", { recursive: true });
-  await fs.writeFile(ORDERS_PATH, JSON.stringify(orders, null, 2), "utf8");
+const KEY_LIST = "orders:list"; // sorted set of orderIds (timestamp score)
+const KEY_ORDER = (id: string) => `orders:byId:${id}`;
+
+export async function saveOrder(order: StoredOrder): Promise<void> {
+  const redis = getRedis();
+  const now = Date.now();
+
+  // store the order object
+  await redis.set(KEY_ORDER(order.id), order);
+
+  // keep an index for listing
+  // (score = now so newest can be shown first)
+  await redis.zadd(KEY_LIST, { score: now, member: order.id });
 }
 
-export async function saveOrder(order: StoredOrder) {
-  const orders = await readOrders();
-  orders.unshift(order);
-  await writeOrders(orders);
+export async function getOrders(limit = 200): Promise<StoredOrder[]> {
+  const redis = getRedis();
+
+  const ids = (await redis.zrange(KEY_LIST, 0, limit - 1, { rev: true })) as string[];
+  if (!ids?.length) return [];
+
+  const orders = await Promise.all(ids.map((id) => redis.get<StoredOrder>(KEY_ORDER(id))));
+  return orders.filter(Boolean) as StoredOrder[];
 }
 
-export async function getOrders() {
-  return readOrders();
-}
+export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<{ ok: boolean; message?: string }> {
+  const redis = getRedis();
+  const existing = await redis.get<StoredOrder>(KEY_ORDER(orderId));
 
-export async function updateOrderStatus(orderId: string, status: OrderStatus) {
-  const orders = await readOrders();
-  const idx = orders.findIndex((o) => o.id === orderId);
-  if (idx === -1) return { ok: false, message: "Order not found" };
-  orders[idx] = { ...orders[idx], status };
-  await writeOrders(orders);
+  if (!existing) return { ok: false, message: "Order not found" };
+
+  const updated: StoredOrder = { ...existing, status };
+  await redis.set(KEY_ORDER(orderId), updated);
+
   return { ok: true };
 }

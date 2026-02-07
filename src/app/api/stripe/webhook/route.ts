@@ -1,58 +1,40 @@
+// src/app/api/stripe/webhook/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
-import { saveOrder, type StoredOrderItem } from "@/lib/orderStore";
+import { saveOrder, type StoredOrderItem, type StoredOrder } from "@/lib/orderStore";
 
 export const runtime = "nodejs";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
-  // Don't set apiVersion here if you keep hitting type issues.
-  // Stripe will use your account default. This avoids TS mismatch problems.
-});
-
-const resend = new Resend(process.env.RESEND_API_KEY || "");
 
 function money(n: number) {
   return `£${n.toFixed(2)}`;
 }
 
-function formatAddress(a: {
-  line1?: string | null;
-  line2?: string | null;
-  city?: string | null;
-  postal_code?: string | null;
-  country?: string | null;
-} | null) {
-  if (!a) return "Not provided";
-  const parts = [
-    a.line1,
-    a.line2,
-    a.city,
-    a.postal_code,
-    a.country,
-  ].filter(Boolean);
-  return parts.length ? parts.join(", ") : "Not provided";
-}
+function renderInvoiceEmail(order: StoredOrder) {
+  const addr = order.shippingAddress;
+  const addressHtml = addr
+    ? `
+      <div style="margin-top:10px">
+        <strong>Shipping address</strong><br/>
+        ${order.shippingName ? `${order.shippingName}<br/>` : ""}
+        ${addr.line1 ? `${addr.line1}<br/>` : ""}
+        ${addr.line2 ? `${addr.line2}<br/>` : ""}
+        ${addr.city ? `${addr.city}<br/>` : ""}
+        ${addr.state ? `${addr.state}<br/>` : ""}
+        ${addr.postal_code ? `${addr.postal_code}<br/>` : ""}
+        ${addr.country ? `${addr.country}<br/>` : ""}
+        ${order.shippingPhone ? `<div>Phone: ${order.shippingPhone}</div>` : ""}
+      </div>
+    `
+    : `<div style="margin-top:10px"><strong>Shipping address</strong><br/>Not provided</div>`;
 
-function renderInvoiceEmail(order: {
-  id: string;
-  email: string;
-  items: StoredOrderItem[];
-  subtotal: number;
-  shippingCost: number;
-  total: number;
-  shippingAddress: any;
-}) {
   return `
   <div style="font-family: Arial, sans-serif; background:#f6f7fb; padding:24px">
     <div style="max-width:700px;margin:auto;background:#ffffff;border-radius:12px;padding:24px">
       <h1 style="margin-top:0">Thank you for your order 💙</h1>
       <p>Your order <strong>${order.id}</strong> has been received.</p>
 
-      <hr />
-
-      <h3>Delivery address</h3>
-      <p style="margin-top:0">${formatAddress(order.shippingAddress)}</p>
+      ${addressHtml}
 
       <hr />
 
@@ -93,10 +75,13 @@ function renderInvoiceEmail(order: {
       <hr />
 
       <p style="font-size:14px;color:#555">
-        We’ll begin working on your item shortly. If you have any questions, reply to this email.
+        We’ll begin working on your item shortly.
+        If you have any questions, reply to this email.
       </p>
 
-      <p style="margin-top:24px;font-weight:bold">Generations in Making</p>
+      <p style="margin-top:24px;font-weight:bold">
+        Generations in Making
+      </p>
     </div>
   </div>
   `;
@@ -104,15 +89,24 @@ function renderInvoiceEmail(order: {
 
 export async function POST(req: Request) {
   try {
-    const sig = req.headers.get("stripe-signature");
-    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+    const stripeSecret = process.env.STRIPE_SECRET_KEY;
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-    if (!sig || !secret) {
+    if (!stripeSecret || !webhookSecret) {
+      return NextResponse.json({ error: "Missing Stripe keys" }, { status: 500 });
+    }
+
+    const stripe = new Stripe(stripeSecret, {
+      apiVersion: "2026-01-28.clover",
+    });
+
+    const sig = req.headers.get("stripe-signature");
+    if (!sig) {
       return NextResponse.json({ error: "Missing Stripe signature" }, { status: 400 });
     }
 
-    const raw = await req.text();
-    const event = stripe.webhooks.constructEvent(raw, sig, secret);
+    const rawBody = await req.text();
+    const event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
 
     if (event.type !== "checkout.session.completed") {
       return NextResponse.json({ received: true });
@@ -120,26 +114,12 @@ export async function POST(req: Request) {
 
     const session = event.data.object as Stripe.Checkout.Session;
 
-    // ✅ Email
     const email =
       session.customer_details?.email ||
       session.customer_email ||
       "unknown";
 
-    // ✅ Shipping address (Type-safe workaround: Stripe types can differ by version)
-    const shippingDetails = (session as any).shipping_details as
-      | { address?: any }
-      | undefined;
-
-    const shippingAddress =
-      shippingDetails?.address ||
-      session.customer_details?.address ||
-      null;
-
-    // ✅ Cart metadata you saved when creating the checkout session
-    const meta = session.metadata?.cart
-      ? JSON.parse(session.metadata.cart)
-      : null;
+    const meta = session.metadata?.cart ? JSON.parse(session.metadata.cart) : null;
 
     const items: StoredOrderItem[] = Array.isArray(meta?.items)
       ? meta.items.map((i: any) => ({
@@ -150,6 +130,8 @@ export async function POST(req: Request) {
           uploadUrl: i.uploadUrl || null,
           customText: i.customText || null,
           font: i.font || null,
+          optionId: i.optionId || null,
+          optionLabel: i.optionLabel || null,
         }))
       : [];
 
@@ -157,72 +139,71 @@ export async function POST(req: Request) {
     const shippingCost = Number(meta?.shippingCost || 0);
     const total = subtotal + shippingCost;
 
-    // ✅ Build an order object (use any so we don’t get blocked by strict type differences)
-    const order: any = {
+    const addr = session.customer_details?.address || null;
+
+    const order: StoredOrder = {
       id: `GIM-${session.id.slice(-6).toUpperCase()}`,
       createdAt: new Date().toISOString(),
       status: "paid",
-      email,              // some parts of your app expect email
-      customerEmail: email, // some parts of your app expect customerEmail
+      customerEmail: email,
+
+      shippingName: session.customer_details?.name || null,
+      shippingPhone: session.customer_details?.phone || null,
+      shippingAddress: addr
+        ? {
+            line1: addr.line1 || null,
+            line2: addr.line2 || null,
+            city: addr.city || null,
+            state: addr.state || null,
+            postal_code: addr.postal_code || null,
+            country: addr.country || null,
+          }
+        : null,
+
+      shippingZone: meta?.shippingZone || "UK",
       shippingCost,
       subtotal,
       total,
+
       stripeSessionId: session.id,
-      shippingAddress,    // ✅ address saved in order
       items,
     };
 
-    // ✅ Save for admin panel
+    // ✅ Save order into Redis (works on Vercel)
     await saveOrder(order);
 
-    // ✅ Send buyer email (and optionally admin email)
-    const from =
-      process.env.ORDER_FROM_EMAIL ||
-      "Generations in Making <onboarding@resend.dev>";
+    // ✅ Emails
+    const resendKey = process.env.RESEND_API_KEY;
+    const from = process.env.ORDER_FROM_EMAIL || "Generations in Making <onboarding@resend.dev>";
+    const adminTo = process.env.ADMIN_TO_EMAIL;
 
-    const adminTo = process.env.ADMIN_TO_EMAIL || "";
+    if (resendKey) {
+      const resend = new Resend(resendKey);
 
-    // Buyer
-    if (process.env.RESEND_API_KEY) {
-      await resend.emails.send({
-        from,
-        to: email,
-        subject: `Your order ${order.id} – Generations in Making`,
-        html: renderInvoiceEmail({
-          id: order.id,
-          email,
-          items,
-          subtotal,
-          shippingCost,
-          total,
-          shippingAddress,
-        }),
-      });
+      // customer email
+      if (email && email !== "unknown") {
+        await resend.emails.send({
+          from,
+          to: email,
+          subject: `Your order ${order.id} – Generations in Making`,
+          html: renderInvoiceEmail(order),
+        });
+      }
 
-      // Admin copy (optional but recommended)
+      // admin email
       if (adminTo) {
         await resend.emails.send({
           from,
           to: adminTo,
-          subject: `NEW ORDER ${order.id} – ${money(total)}`,
-          html: renderInvoiceEmail({
-            id: order.id,
-            email,
-            items,
-            subtotal,
-            shippingCost,
-            total,
-            shippingAddress,
-          }),
+          subject: `NEW ORDER ${order.id} – £${order.total.toFixed(2)}`,
+          html: renderInvoiceEmail(order),
         });
       }
     }
 
     return NextResponse.json({ received: true });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message || "Webhook error" },
-      { status: 500 }
-    );
+    // Stripe wants a 2xx if you handled it, otherwise it will keep retrying.
+    return NextResponse.json({ error: err?.message || "Webhook error" }, { status: 500 });
   }
 }

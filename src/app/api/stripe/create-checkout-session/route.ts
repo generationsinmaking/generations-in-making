@@ -1,81 +1,89 @@
+// src/app/api/stripe/create-checkout-session/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
-import type { CartItem } from "@/lib/cart";
 
 export const runtime = "nodejs";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
+type CartItem = {
+  id: string;
+  name: string;
+  qty: number;
+  unitPrice: number;
+  uploadUrl?: string | null;
+  customText?: string | null;
+  font?: string | null;
+  optionId?: string | null;
+  optionLabel?: string | null;
+};
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const items: CartItem[] = Array.isArray(body.items) ? body.items : [];
-
-    if (!items.length) {
-      return NextResponse.json(
-        { error: "No items provided" },
-        { status: 400 }
-      );
+    const stripeSecret = process.env.STRIPE_SECRET_KEY;
+    if (!stripeSecret) {
+      return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY" }, { status: 500 });
     }
 
-    const siteUrl =
-      process.env.SITE_URL || "https://www.generationsinmaking.com";
+    const stripe = new Stripe(stripeSecret, {
+      apiVersion: "2026-01-28.clover",
+    });
 
-    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] =
-      items.map((item) => ({
-        price_data: {
-          currency: "gbp",
-          product_data: {
-            name: item.name,
-          },
-          unit_amount: Math.round(item.unitPrice * 100),
-        },
-        quantity: item.qty,
-      }));
+    const body = await req.json().catch(() => ({}));
+    const items: CartItem[] = Array.isArray(body.items) ? body.items : [];
+    const shippingCost = Number(body.shippingCost || 0);
+    const shippingZone = String(body.shippingZone || "UK");
+
+    if (!items.length) {
+      return NextResponse.json({ error: "Cart is empty" }, { status: 400 });
+    }
+
+    const siteUrl = process.env.SITE_URL || "http://localhost:3000";
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
 
-      // ✅ THIS FORCES ADDRESS COLLECTION
+      // ✅ makes Stripe ask for address
       shipping_address_collection: {
-        allowed_countries: ["GB"],
+        allowed_countries: ["GB", "IE"],
       },
 
-      // ✅ THIS MAKES STRIPE REQUIRE SHIPPING DETAILS
-      shipping_options: [
-        {
-          shipping_rate_data: {
-            type: "fixed_amount",
-            fixed_amount: {
-              amount: Math.round((body.shippingCost || 0) * 100),
-              currency: "gbp",
-            },
-            display_name: "UK Shipping",
-          },
-        },
-      ],
+      // (optional but useful)
+      phone_number_collection: { enabled: true },
 
-      line_items,
-
-      // ✅ LIVE SITE REDIRECTS (NOT LOCALHOST)
       success_url: `${siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${siteUrl}/cart`,
 
-      // ✅ SAVE CART DATA FOR WEBHOOK
+      customer_creation: "always",
+
+      line_items: [
+        ...items.map((i) => ({
+          quantity: i.qty,
+          price_data: {
+            currency: "gbp",
+            product_data: { name: i.name },
+            unit_amount: Math.round(i.unitPrice * 100),
+          },
+        })),
+        ...(shippingCost > 0
+          ? [
+              {
+                quantity: 1,
+                price_data: {
+                  currency: "gbp",
+                  product_data: { name: `Shipping (${shippingZone})` },
+                  unit_amount: Math.round(shippingCost * 100),
+                },
+              },
+            ]
+          : []),
+      ],
+
       metadata: {
-        cart: JSON.stringify({
-          items,
-          shippingCost: body.shippingCost || 0,
-        }),
+        cart: JSON.stringify({ items, shippingCost, shippingZone }),
       },
     });
 
     return NextResponse.json({ url: session.url });
   } catch (err: any) {
-    console.error("Stripe checkout error:", err);
-    return NextResponse.json(
-      { error: err.message || "Checkout failed" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err?.message || "Stripe error" }, { status: 500 });
   }
 }

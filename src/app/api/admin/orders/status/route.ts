@@ -6,8 +6,7 @@ export const runtime = "nodejs";
 
 function isAuthed(req: Request) {
   const token = req.headers.get("x-admin-token") || "";
-  const expected = process.env.ADMIN_TOKEN || "";
-  return expected && token === expected;
+  return !!process.env.ADMIN_TOKEN && token === process.env.ADMIN_TOKEN;
 }
 
 export async function POST(req: Request) {
@@ -20,25 +19,18 @@ export async function POST(req: Request) {
     const orderId = String(body.orderId || "");
     const status = body.status as OrderStatus;
 
-    if (!orderId) {
-      return NextResponse.json({ error: "Missing orderId" }, { status: 400 });
+    if (!orderId || !status) {
+      return NextResponse.json({ error: "Missing orderId or status" }, { status: 400 });
     }
 
-    if (!["pending", "in_progress", "completed"].includes(status)) {
-      return NextResponse.json({ error: "Invalid status" }, { status: 400 });
-    }
+    const result = await updateOrderStatus(orderId, status);
 
-    const ok = await updateOrderStatus(orderId, status);
-
-    if (!ok) {
-      return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    if (!result.ok) {
+      return NextResponse.json({ error: result.message || "Failed" }, { status: 404 });
     }
 
     return NextResponse.json({ ok: true });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message || "Server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err?.message || "Server error" }, { status: 500 });
   }
 }
