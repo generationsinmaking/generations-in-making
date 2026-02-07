@@ -1,91 +1,68 @@
-// src/lib/orderStore.ts
-import fs from "fs/promises";
-import path from "path";
-
-export type OrderStatus = "pending" | "in_progress" | "completed";
+export type OrderStatus = "pending" | "processing" | "shipped" | "cancelled" | "refunded";
 
 export type StoredOrderItem = {
   id: string;
   name: string;
   qty: number;
   unitPrice: number;
-  uploadUrl?: string | null;
-  customText?: string | null;
-  font?: string | null;
+  uploadUrl: string | null;
+  customText: string | null;
+  font: string | null;
+  optionId?: string | null;
+  optionLabel?: string | null;
 };
 
 export type StoredOrder = {
   id: string;
   createdAt: string;
   status: OrderStatus;
-
-  // Keep both for compatibility
-  email: string; // ✅ canonical field
-  customerEmail?: string; // ✅ backwards compatible
-
-  shippingZone: "UK" | "INTL";
+  customerEmail: string;
+  shippingZone: string;
   shippingCost: number;
   subtotal: number;
   total: number;
-
   stripeSessionId: string;
   items: StoredOrderItem[];
+
+  // ✅ New: stored shipping address (HTML with <br/>)
+  shippingAddressHtml?: string;
 };
 
-function storePath() {
-  // ✅ On Vercel you can only write to /tmp
-  // You can override locally using ORDER_STORE_PATH=data/orders.json
-  const p = process.env.ORDER_STORE_PATH || "/tmp/gim-orders.json";
+// Simple JSON-file store (works locally). If you later move to a DB, this stays similar.
+const ORDERS_PATH = "data/orders.json";
 
-  // If user sets a relative path (like data/orders.json), resolve from project root
-  if (p.startsWith("/") || p.includes(":")) return p;
-  return path.join(process.cwd(), p);
-}
-
-async function ensureDirForFile(file: string) {
-  const dir = path.dirname(file);
-  await fs.mkdir(dir, { recursive: true }).catch(() => {});
-}
-
-export async function readOrders(): Promise<StoredOrder[]> {
-  const file = storePath();
+async function readOrders(): Promise<StoredOrder[]> {
   try {
-    const raw = await fs.readFile(file, "utf8");
+    const fs = await import("fs/promises");
+    const raw = await fs.readFile(ORDERS_PATH, "utf8");
     const data = JSON.parse(raw);
-    if (!Array.isArray(data)) return [];
-    return data as StoredOrder[];
+    return Array.isArray(data) ? data : [];
   } catch {
     return [];
   }
 }
 
-export async function writeOrders(orders: StoredOrder[]) {
-  const file = storePath();
-  await ensureDirForFile(file);
-  await fs.writeFile(file, JSON.stringify(orders, null, 2), "utf8");
+async function writeOrders(orders: StoredOrder[]) {
+  const fs = await import("fs/promises");
+  await fs.mkdir("data", { recursive: true });
+  await fs.writeFile(ORDERS_PATH, JSON.stringify(orders, null, 2), "utf8");
 }
 
 export async function saveOrder(order: StoredOrder) {
   const orders = await readOrders();
-
-  // Replace if same id exists
-  const idx = orders.findIndex((o) => o.id === order.id);
-  if (idx >= 0) orders[idx] = order;
-  else orders.unshift(order);
-
+  orders.unshift(order);
   await writeOrders(orders);
 }
 
-export async function listOrders(): Promise<StoredOrder[]> {
+export async function getOrders() {
   return readOrders();
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus) {
   const orders = await readOrders();
   const idx = orders.findIndex((o) => o.id === orderId);
-  if (idx === -1) return false;
-
+  if (idx === -1) return { ok: false, message: "Order not found" };
   orders[idx] = { ...orders[idx], status };
   await writeOrders(orders);
-  return true;
+  return { ok: true };
 }
