@@ -1,61 +1,80 @@
+// src/app/api/stripe/create-checkout-session/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import type { CartItem } from "@/lib/cart";
 
 export const runtime = "nodejs";
 
-// IMPORTANT: don't force apiVersion here (it caused TS errors for you before)
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
+/**
+ * Picks the best base URL for redirects:
+ * 1) SITE_URL (production) if set
+ * 2) Request Origin header (dev / previews)
+ * 3) VERCEL_URL fallback
+ */
+function getBaseUrl(req: Request) {
+  const siteUrl = process.env.SITE_URL?.trim();
+  if (siteUrl) return siteUrl.replace(/\/$/, "");
 
-function getShippingQuote(zone: string, items: CartItem[]) {
-  // You can tweak these prices any time
-  const z = (zone || "UK").toUpperCase();
+  const origin = req.headers.get("origin")?.trim();
+  if (origin) return origin.replace(/\/$/, "");
 
-  // Example simple rules:
-  // - UK: £2.20
-  // - Everywhere else: £4.95
-  const shippingCost = z === "UK" ? 2.2 : 4.95;
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+  if (vercelUrl) return `https://${vercelUrl.replace(/\/$/, "")}`;
 
-  return { shippingZone: z, shippingCost };
+  // absolute last fallback (shouldn’t happen)
+  return "http://localhost:3000";
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
+    const publishable = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || "";
 
-    const items: CartItem[] = Array.isArray(body.items) ? body.items : [];
-    const shippingZone: string = body.shippingZone || "UK";
-
-    if (!process.env.STRIPE_SECRET_KEY) {
-      return NextResponse.json(
-        { error: "Missing STRIPE_SECRET_KEY" },
-        { status: 500 }
-      );
+    if (!stripeSecret) {
+      return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY" }, { status: 500 });
+    }
+    if (!publishable) {
+      return NextResponse.json({ error: "Missing NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY" }, { status: 500 });
     }
 
-    if (items.length === 0) {
+    const stripe = new Stripe(stripeSecret, {
+      // IMPORTANT: use the version that matches your installed Stripe types
+      // If TypeScript complains, remove apiVersion entirely and Stripe will use your account default.
+      // apiVersion: "2024-06-20",
+    });
+
+    const baseUrl = getBaseUrl(req);
+
+    const body = await req.json().catch(() => ({}));
+    const items: CartItem[] = Array.isArray(body.items) ? body.items : [];
+    const shippingCost = Number(body.shippingCost ?? 0);
+    const shippingZone = String(body.shippingZone ?? "UK");
+
+    if (!items.length) {
       return NextResponse.json({ error: "Cart is empty" }, { status: 400 });
     }
 
-    const { shippingCost } = getShippingQuote(shippingZone, items);
-
-    // Stripe requires amounts in pence
-    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = items.map(
-      (i) => ({
-        quantity: i.qty,
-        price_data: {
-          currency: "gbp",
-          product_data: {
-            name: i.name,
-            // If you store an image URL on the item, include it (optional)
-            images: i.uploadUrl ? [i.uploadUrl] : undefined,
+    // Build Stripe line items
+    const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = items.map((i) => ({
+      quantity: i.qty,
+      price_data: {
+        currency: "gbp",
+        product_data: {
+          name: i.name,
+          // You can add images here if you want: images: i.uploadUrl ? [i.uploadUrl] : undefined,
+          metadata: {
+            optionId: i.optionId || "",
+            optionLabel: i.optionLabel || "",
+            uploadUrl: i.uploadUrl || "",
+            customText: i.customText || "",
+            font: i.font || "",
           },
-          unit_amount: Math.round(i.unitPrice * 100),
         },
-      })
-    );
+        unit_amount: Math.round(i.unitPrice * 100),
+      },
+    }));
 
-    // Add shipping as a line item (simple + reliable)
+    // Optional: add shipping as its own line item
     if (shippingCost > 0) {
       line_items.push({
         quantity: 1,
@@ -67,46 +86,35 @@ export async function POST(req: Request) {
       });
     }
 
-    // Store what we need for the webhook (so admin panel + emails can use it)
-    const cartForWebhook = {
-      shippingZone,
+    // Put your cart into metadata so your webhook can recreate the order
+    const cartMeta = JSON.stringify({
+      items,
       shippingCost,
-      items: items.map((i) => ({
-        id: i.id,
-        name: i.name,
-        qty: i.qty,
-        unitPrice: i.unitPrice,
-        uploadUrl: i.uploadUrl || null,
-        customText: (i as any).customText || null,
-        font: (i as any).font || null,
-      })),
-    };
-
-    const siteUrl =
-      process.env.SITE_URL ||
-      (req.headers.get("origin") ? req.headers.get("origin")! : "");
-
-    if (!siteUrl) {
-      return NextResponse.json(
-        { error: "Missing SITE_URL env var (or origin header)" },
-        { status: 500 }
-      );
-    }
+      shippingZone,
+    });
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       line_items,
-      success_url: `${siteUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${siteUrl}/cart`,
-      // This makes Stripe ask for name + address on Checkout
-      billing_address_collection: "required",
-      // This forces address collection (shipping address)
+
+      // ✅ THIS is what was sending you to localhost before
+      success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/checkout`,
+
+      // ✅ Ask for address
+      // For physical products, this is the simplest way:
       shipping_address_collection: {
-        allowed_countries: ["GB", "IE", "US", "CA", "AU", "NZ", "FR", "DE", "ES", "IT", "NL"],
+        allowed_countries: ["GB", "IE"],
       },
-      customer_creation: "always",
+
+      // Useful for receipts + your webhook
+      customer_email: body.email || undefined,
+
+      // If you want Stripe to show a phone field too:
+      // phone_number_collection: { enabled: true },
+
       metadata: {
-        cart: JSON.stringify(cartForWebhook),
+        cart: cartMeta,
       },
     });
 
