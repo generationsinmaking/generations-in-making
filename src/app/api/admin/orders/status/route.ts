@@ -1,69 +1,65 @@
-import { NextResponse } from "next/server";
-import { updateOrderStatus, type OrderStatus } from "@/lib/orderStore";
+// src/app/api/admin/orders/status/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { updateOrder, type OrderStatus } from "@/lib/orderStore";
 import { sendOrderEmails } from "@/lib/email";
 
 export const runtime = "nodejs";
 
-function getAdminToken(req: Request) {
-  const headerToken = req.headers.get("x-admin-token");
-  if (headerToken) return headerToken;
-
-  const auth = req.headers.get("authorization");
-  if (auth?.toLowerCase().startsWith("bearer ")) return auth.slice(7);
-
-  return null;
+function isAdminAllowed(req: NextRequest) {
+  if (process.env.ADMIN_UK_ONLY === "1") {
+    const country = req.headers.get("x-vercel-ip-country");
+    if (country && country !== "GB") return false;
+  }
+  return true;
 }
 
-export async function POST(request: Request) {
-  try {
-    // --- Admin auth ---
-    const expected = process.env.ADMIN_TOKEN;
-    const provided = getAdminToken(request);
+function isAuthed(req: NextRequest) {
+  const token = req.headers.get("x-admin-token") || "";
+  return token && token === process.env.ADMIN_TOKEN;
+}
 
-    if (!expected) {
-      return NextResponse.json(
-        { error: "Missing ADMIN_TOKEN on server" },
-        { status: 500 }
-      );
-    }
-
-    if (!provided || provided !== expected) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    // --- Body ---
-    const body = await request.json().catch(() => null);
-    const orderId = body?.orderId as string | undefined;
-    const status = body?.status as OrderStatus | undefined;
-
-    if (!orderId || !status) {
-      return NextResponse.json(
-        { error: "Missing orderId or status" },
-        { status: 400 }
-      );
-    }
-
-    // --- Update ---
-    const result = await updateOrderStatus(orderId, status);
-
-    // result.order can be undefined -> handle it safely
-    if (!result?.ok || !result?.order) {
-      return NextResponse.json(
-        { error: result?.message || "Order not found" },
-        { status: 404 }
-      );
-    }
-
-    // --- Optional: shipped email ---
-    if (status === "shipped") {
-      await sendOrderEmails({ order: result.order, type: "shipped" } as any);
-    }
-
-    return NextResponse.json({ ok: true, order: result.order });
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "Failed to update order" },
-      { status: 500 }
-    );
+export async function POST(req: NextRequest) {
+  if (!isAdminAllowed(req)) {
+    return NextResponse.json({ error: "Admin is restricted" }, { status: 403 });
   }
+  if (!isAuthed(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const body = (await req.json().catch(() => null)) as
+    | { id?: string; status?: OrderStatus; trackingNumber?: string }
+    | null;
+
+  const id = body?.id;
+  const status = body?.status;
+
+  if (!id || !status) {
+    return NextResponse.json({ error: "Missing id/status" }, { status: 400 });
+  }
+
+  const patch: { status: OrderStatus; trackingNumber?: string | null; shippedAt?: string | null } = {
+    status,
+  };
+
+  if (typeof body?.trackingNumber === "string" && body.trackingNumber.trim()) {
+    patch.trackingNumber = body.trackingNumber.trim();
+  }
+
+  if (status === "shipped") {
+    patch.shippedAt = new Date().toISOString();
+  } else {
+    patch.shippedAt = null;
+  }
+
+  const result = await updateOrder(id, patch);
+  if (!result.ok) {
+    return NextResponse.json({ error: result.message }, { status: 404 });
+  }
+
+  // If you want emails when marked shipped:
+  if (status === "shipped") {
+    await sendOrderEmails({ order: result.order, type: "shipped" });
+  }
+
+  return NextResponse.json({ ok: true, order: result.order });
 }

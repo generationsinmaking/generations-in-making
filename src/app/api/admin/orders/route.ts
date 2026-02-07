@@ -1,20 +1,34 @@
-import { NextResponse } from "next/server";
+// src/app/api/admin/orders/route.ts
+import { NextRequest, NextResponse } from "next/server";
 import { listOrders } from "@/lib/orderStore";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    const orders = await listOrders();
-
-    // Optional: limit how many show in admin
-    const limited = orders.slice(0, 200);
-
-    return NextResponse.json({ orders: limited });
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "Failed to load orders" },
-      { status: 500 }
-    );
+function isAdminAllowed(req: NextRequest) {
+  // Optional UK-only lock (works on Vercel where this header exists)
+  if (process.env.ADMIN_UK_ONLY === "1") {
+    const country = req.headers.get("x-vercel-ip-country");
+    if (country && country !== "GB") return false;
   }
+  return true;
+}
+
+function isAuthed(req: NextRequest) {
+  const token = req.headers.get("x-admin-token") || "";
+  return token && token === process.env.ADMIN_TOKEN;
+}
+
+export async function GET(req: NextRequest) {
+  if (!isAdminAllowed(req)) {
+    return NextResponse.json({ error: "Admin is restricted" }, { status: 403 });
+  }
+  if (!isAuthed(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const limit = Number(searchParams.get("limit") || "200");
+
+  const orders = await listOrders(Number.isFinite(limit) ? limit : 200);
+  return NextResponse.json({ orders });
 }
