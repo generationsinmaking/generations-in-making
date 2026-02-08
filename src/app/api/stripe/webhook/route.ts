@@ -1,163 +1,29 @@
+// src/app/api/stripe/webhook/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
-import { saveOrder, type StoredOrder, type StoredOrderItem } from "@/lib/orderStore";
+import { saveOrder, type StoredOrder } from "@/lib/orderStore";
+import { sendOrderEmails } from "@/lib/email";
 
 export const runtime = "nodejs";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
-  apiVersion: "2026-01-28.clover",
-});
-
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
 const resend = new Resend(process.env.RESEND_API_KEY || "");
 
-function gbpToNumber(amountMinor: number | null | undefined) {
-  return typeof amountMinor === "number" ? amountMinor / 100 : 0;
-}
-
-function moneyGBP(n: number) {
-  return `£${n.toFixed(2)}`;
-}
-
-function safeText(s: unknown) {
-  return typeof s === "string" ? s : "";
-}
-
-function formatShippingHTML(addr?: StoredOrder["shippingAddress"] | null) {
-  if (!addr) return "";
-
-  const lines = [
-    addr.name,
-    addr.line1,
-    addr.line2,
-    addr.city,
-    addr.state,
-    addr.postal_code,
-    addr.country,
-  ].filter(Boolean);
-
-  return `
-    <div style="margin-top:10px">
-      <strong>Shipping address</strong><br/>
-      ${lines.map((l) => `${l}<br/>`).join("")}
-      ${addr.phone ? `<div>Phone: ${addr.phone}</div>` : ""}
-    </div>
-  `;
-}
-
-function buildItemsHTML(items: StoredOrderItem[]) {
-  return items
-    .map((it) => {
-      const img = it.uploadUrl
-        ? `<img src="${it.uploadUrl}" style="width:120px;height:90px;object-fit:contain;border:1px solid #ddd;border-radius:8px" />`
-        : "";
-
-      return `
-        <div style="display:flex;gap:16px;margin-bottom:16px">
-          ${img}
-          <div>
-            <strong>${it.name}</strong><br/>
-            Qty: ${it.qty}<br/>
-            Unit price: ${moneyGBP(it.unitPrice)}<br/>
-            Line total: ${moneyGBP(it.unitPrice * it.qty)}
-            ${it.customText ? `<div style="margin-top:6px"><strong>Text:</strong> ${it.customText}</div>` : ""}
-            ${it.font ? `<div><strong>Font:</strong> ${it.font}</div>` : ""}
-          </div>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-async function sendOrderEmails(params: {
-  order: StoredOrder;
-  buyerEmail?: string | null;
-  adminEmail?: string | null;
-  type: "created" | "shipped";
-  trackingNumber?: string | null;
-}) {
-  const { order, buyerEmail, adminEmail, type, trackingNumber } = params;
-
-  const from = safeText(process.env.ORDER_FROM_EMAIL).trim();
-  if (!from || !from.includes("<") || !from.includes(">")) {
-    throw new Error(
-      "ORDER_FROM_EMAIL is missing or invalid. Use: Name <email@yourdomain.com>"
-    );
-  }
-
-  const subject =
-    type === "created"
-      ? `NEW ORDER ${order.id} – ${moneyGBP(order.total)}`
-      : `SHIPPED ${order.id}${trackingNumber ? ` – Tracking: ${trackingNumber}` : ""}`;
-
-  const html = `
-  <div style="font-family: Arial, sans-serif; background:#f6f7fb; padding:24px">
-    <div style="max-width:700px;margin:auto;background:#ffffff;border-radius:12px;padding:24px">
-      <h1 style="margin-top:0">
-        ${type === "created" ? "Thank you for your order 💙" : "Your order has shipped 📦"}
-      </h1>
-
-      <p>
-        Your order <strong>${order.id}</strong>
-        ${type === "created" ? " has been received." : " is on the way."}
-      </p>
-
-      ${trackingNumber ? `<p><strong>Tracking:</strong> ${trackingNumber}</p>` : ""}
-
-      ${formatShippingHTML(order.shippingAddress)}
-
-      <hr />
-
-      ${buildItemsHTML(order.items)}
-
-      <hr />
-
-      <p>Subtotal: ${moneyGBP(order.subtotal)}</p>
-      <p>Shipping: ${moneyGBP(order.shippingCost)}</p>
-      <h2>Total: ${moneyGBP(order.total)}</h2>
-
-      <hr />
-
-      <p style="font-size:14px;color:#555">
-        ${type === "created"
-          ? "We’ll begin working on your item shortly. If you have any questions, reply to this email."
-          : "If you have any questions, reply to this email and we’ll help you."}
-      </p>
-
-      <p style="margin-top:24px;font-weight:bold">Generations in Making</p>
-    </div>
-  </div>
-  `;
-
-  if (buyerEmail) {
-    await resend.emails.send({
-      from,
-      to: buyerEmail,
-      subject: type === "created" ? `Order received ${order.id}` : `Order shipped ${order.id}`,
-      html,
-    });
-  }
-
-  if (adminEmail) {
-    await resend.emails.send({
-      from,
-      to: adminEmail,
-      subject,
-      html,
-    });
-  }
+function safeString(v: unknown) {
+  return typeof v === "string" ? v : "";
 }
 
 export async function POST(req: Request) {
   try {
-    const sig = req.headers.get("stripe-signature");
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
+    if (!webhookSecret) {
+      return NextResponse.json({ error: "Missing STRIPE_WEBHOOK_SECRET" }, { status: 500 });
+    }
 
-    if (!sig || !webhookSecret) {
-      return NextResponse.json(
-        { error: "Missing Stripe signature or STRIPE_WEBHOOK_SECRET" },
-        { status: 400 }
-      );
+    const sig = req.headers.get("stripe-signature");
+    if (!sig) {
+      return NextResponse.json({ error: "Missing stripe-signature header" }, { status: 400 });
     }
 
     const rawBody = await req.text();
@@ -167,103 +33,120 @@ export async function POST(req: Request) {
       event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
     } catch (err: any) {
       return NextResponse.json(
-        { error: `Webhook signature verification failed: ${err?.message || "unknown"}` },
+        { error: `Webhook signature verification failed: ${err?.message || "Unknown error"}` },
         { status: 400 }
       );
     }
 
     if (event.type !== "checkout.session.completed") {
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, ignored: event.type });
     }
 
-    const session = event.data.object as Stripe.Checkout.Session;
+    const sessionFromEvent = event.data.object as Stripe.Checkout.Session;
+    const sessionId = sessionFromEvent.id;
 
-    const full = await stripe.checkout.sessions.retrieve(session.id, {
+    // Fetch full session with line items
+    const fullResp = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["line_items.data.price.product"],
     });
 
-    const customerEmail =
-      full.customer_details?.email ||
-      (typeof full.customer_email === "string" ? full.customer_email : "") ||
+    // Stripe returns Stripe.Response<Session> — cast to Session so we can use it
+    const full = fullResp as unknown as Stripe.Checkout.Session;
+
+    const lineItems = (full.line_items?.data || []) as Stripe.LineItem[];
+
+    // ✅ Stripe types sometimes don’t include shipping_details, so access via "any"
+    const shippingDetails = (((full as any).shipping_details ?? null) as any) || null;
+    const customerDetails = (((full as any).customer_details ?? null) as any) || null;
+
+    const addrSrc = shippingDetails?.address ?? customerDetails?.address ?? null;
+
+    const shippingName =
+      safeString(shippingDetails?.name) ||
+      safeString(customerDetails?.name) ||
+      safeString((full as any)?.customer_details?.name) ||
       "";
 
-    const customerName = full.customer_details?.name || "";
-    const phone = full.customer_details?.phone || "";
-
-    const addr = full.customer_details?.address || null;
-
-    const shippingAddress: StoredOrder["shippingAddress"] = addr
+    const shippingAddress = addrSrc
       ? {
-          name: customerName,
-          phone,
-          line1: addr.line1 || "",
-          line2: addr.line2 || "",
-          city: addr.city || "",
-          state: addr.state || "",
-          postal_code: addr.postal_code || "",
-          country: addr.country || "",
+          line1: safeString(addrSrc.line1),
+          line2: safeString(addrSrc.line2),
+          city: safeString(addrSrc.city),
+          state: safeString(addrSrc.state),
+          postalCode: safeString(addrSrc.postal_code),
+          country: safeString(addrSrc.country),
+          phone: safeString(shippingDetails?.phone || customerDetails?.phone || null),
         }
       : null;
 
-    const lineItems = full.line_items?.data || [];
+    const customerEmail =
+      safeString((full as any)?.customer_details?.email) ||
+      safeString((full as any)?.customer_email) ||
+      "";
 
-    const items: StoredOrderItem[] = lineItems.map((li) => {
-      const qty = li.quantity || 1;
-      const unitPrice = gbpToNumber(li.price?.unit_amount);
+    const subtotalPence = (full as any).amount_subtotal ?? 0;
+    const shippingPence = (full as any).total_details?.amount_shipping ?? 0;
+    const totalPence = (full as any).amount_total ?? 0;
 
-      const product = li.price?.product as Stripe.Product | null;
-      const name = product?.name || li.description || "Item";
+    const items = lineItems.map((li) => {
+      const qty = li.quantity ?? 1;
 
-      const uploadUrl = safeText(full.metadata?.uploadUrl) || null;
-      const customText = safeText(full.metadata?.customText) || null;
-      const font = safeText(full.metadata?.font) || null;
+      const unitAmountPence =
+        (li.price?.unit_amount ?? null) ??
+        ((li.amount_subtotal != null
+          ? Math.round(li.amount_subtotal / Math.max(qty, 1))
+          : 0) as number);
+
+      const lineTotalPence =
+        li.amount_subtotal != null ? li.amount_subtotal : unitAmountPence * qty;
+
+      const productName =
+        safeString((li.price?.product as any)?.name) ||
+        safeString(li.description) ||
+        "Item";
+
+      const meta = ((li as any)?.metadata || {}) as Record<string, any>;
+      const uploadUrl = safeString(meta.uploadUrl || meta.upload_url || "");
+      const customText = safeString(meta.customText || meta.custom_text || "");
+      const font = safeString(meta.font || "");
 
       return {
-        id: li.id,
-        name,
-        qty,
-        unitPrice,
-        uploadUrl,
-        customText,
-        font,
+        name: productName,
+        quantity: qty,
+        unitPrice: Number((unitAmountPence / 100).toFixed(2)),
+        lineTotal: Number((lineTotalPence / 100).toFixed(2)),
+        uploadUrl: uploadUrl || undefined,
+        customText: customText || undefined,
+        font: font || undefined,
       };
     });
 
-    const subtotal = gbpToNumber(full.amount_subtotal);
-    const total = gbpToNumber(full.amount_total);
-    const shippingCost = gbpToNumber(full.total_details?.amount_shipping);
-
-    const orderId = `GIM-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+    const orderId = `GIM-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 
     const order: StoredOrder = {
       id: orderId,
-      // ✅ FIX: StoredOrder.createdAt is a string in your project
       createdAt: new Date().toISOString(),
       status: "paid",
       customerEmail,
-      stripeSessionId: full.id,
+      stripeSessionId: sessionId,
+
+      subtotal: Number((subtotalPence / 100).toFixed(2)),
+      shipping: Number((shippingPence / 100).toFixed(2)),
+      total: Number((totalPence / 100).toFixed(2)),
+
+      shippingName: shippingName || undefined,
+      shippingAddress: shippingAddress || undefined,
+
       items,
-      subtotal,
-      shippingCost,
-      total,
-      shippingZone: safeText(full.metadata?.shippingZone) || "UK",
-      shippingAddress,
     };
 
     await saveOrder(order);
 
-    await sendOrderEmails({
-      order,
-      buyerEmail: customerEmail || null,
-      adminEmail: process.env.ADMIN_TO_EMAIL || null,
-      type: "created",
-    });
+    // ✅ Your sendOrderEmails only supports: "new_order" | "shipped"
+    await sendOrderEmails({ order, type: "new_order" });
 
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || "Internal Server Error" },
-      { status: 500 }
-    );
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message || "Webhook failed" }, { status: 500 });
   }
 }

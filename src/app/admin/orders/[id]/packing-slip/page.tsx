@@ -1,4 +1,5 @@
 // src/app/admin/orders/[id]/packing-slip/page.tsx
+import { notFound } from "next/navigation";
 import { getOrder } from "@/lib/orderStore";
 
 export const runtime = "nodejs";
@@ -7,77 +8,103 @@ function money(n: number) {
   return `£${n.toFixed(2)}`;
 }
 
-export default async function PackingSlipPage({ params }: { params: { id: string } }) {
+export default async function PackingSlipPage({
+  params,
+}: {
+  params: { id: string };
+}) {
   const order = await getOrder(params.id);
+  if (!order) return notFound();
 
-  if (!order) {
-    return (
-      <div style={{ padding: 24 }}>
-        <h1>Not found</h1>
-        <p>Order does not exist.</p>
-      </div>
-    );
-  }
+  const a = order.shippingAddress || null;
 
-  const a = order.shippingAddress || {};
-  const addrLines = [a.name, a.line1, a.line2, a.city, a.state, a.postal_code, a.country].filter(Boolean);
+  const addrLines = [
+    order.shippingName || null,
+    a?.line1 || null,
+    a?.line2 || null,
+    a?.city || null,
+    a?.state || null,
+    a?.postalCode || null,
+    a?.country || null,
+  ].filter(Boolean) as string[];
 
   return (
-    <div style={{ padding: 24, maxWidth: 800, margin: "0 auto", fontFamily: "Arial, sans-serif" }}>
-      <style>{`
-        @media print {
-          button, a { display: none !important; }
-          body { background: white !important; }
-        }
-      `}</style>
+    <div
+      style={{
+        padding: 24,
+        maxWidth: 900,
+        margin: "0 auto",
+        fontFamily: "Arial, sans-serif",
+        color: "#111",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 24 }}>
+        <div>
+          <h1 style={{ margin: 0 }}>Packing Slip</h1>
+          <div style={{ marginTop: 8 }}>
+            <div>
+              <strong>Order:</strong> {order.id}
+            </div>
+            <div>
+              <strong>Date:</strong>{" "}
+              {new Date(order.createdAt).toLocaleString("en-GB")}
+            </div>
+            <div>
+              <strong>Status:</strong> {order.status}
+            </div>
+            {order.customerEmail ? (
+              <div>
+                <strong>Customer:</strong> {order.customerEmail}
+              </div>
+            ) : null}
+            {order.trackingNumber ? (
+              <div>
+                <strong>Tracking:</strong> {order.trackingNumber}
+              </div>
+            ) : null}
+          </div>
+        </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
-        <a href="/admin/orders" style={{ textDecoration: "none" }}>← Back</a>
-        <button
-          onClick={() => window.print()}
+        <div
           style={{
-            padding: "10px 14px",
+            minWidth: 320,
+            border: "1px solid #ddd",
             borderRadius: 10,
-            border: "1px solid #ccc",
-            background: "white",
-            cursor: "pointer",
-            fontWeight: 700,
+            padding: 16,
           }}
         >
-          Print
-        </button>
-      </div>
+          <div style={{ fontWeight: 800, marginBottom: 8 }}>Ship to</div>
 
-      <h1 style={{ margin: 0 }}>Packing Slip</h1>
-      <div style={{ marginTop: 6, color: "#333" }}>
-        <strong>Order:</strong> {order.id} • <strong>Date:</strong>{" "}
-        {new Date(order.createdAt).toLocaleString()}
-      </div>
-
-      <hr style={{ margin: "16px 0" }} />
-
-      <h2 style={{ margin: "0 0 8px 0" }}>Ship to</h2>
-      {addrLines.length ? (
-        <div style={{ lineHeight: 1.5 }}>
-          {addrLines.map((l, i) => (
-            <div key={i}>{l}</div>
-          ))}
-          {a.phone ? <div>Phone: {a.phone}</div> : null}
+          {addrLines.length ? (
+            <div style={{ lineHeight: 1.5 }}>
+              {addrLines.map((line, i) => (
+                <div key={i}>{line}</div>
+              ))}
+              {a?.phone ? <div style={{ marginTop: 6 }}>Phone: {a.phone}</div> : null}
+            </div>
+          ) : (
+            <div>Shipping address not available.</div>
+          )}
         </div>
-      ) : (
-        <div>Shipping address not available.</div>
-      )}
+      </div>
 
-      <hr style={{ margin: "16px 0" }} />
-
-      <h2 style={{ margin: "0 0 8px 0" }}>Items</h2>
+      <hr style={{ margin: "20px 0" }} />
 
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
-          <tr>
-            <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "8px 0" }}>Item</th>
-            <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: "8px 0" }}>Qty</th>
-            <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: "8px 0" }}>Line</th>
+          <tr style={{ textAlign: "left" }}>
+            <th style={{ padding: "10px 0", borderBottom: "2px solid #eee" }}>
+              Item
+            </th>
+            <th style={{ padding: "10px 0", borderBottom: "2px solid #eee" }}>
+              Qty
+            </th>
+            <th style={{ padding: "10px 0", borderBottom: "2px solid #eee" }}>
+              Unit
+            </th>
+            <th style={{ padding: "10px 0", borderBottom: "2px solid #eee" }}>
+              Line
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -85,20 +112,28 @@ export default async function PackingSlipPage({ params }: { params: { id: string
             <tr key={idx}>
               <td style={{ padding: "10px 0", borderBottom: "1px solid #eee" }}>
                 <div style={{ fontWeight: 700 }}>{it.name}</div>
+
                 {it.customText ? (
-                  <div style={{ color: "#444", marginTop: 4 }}>
+                  <div style={{ marginTop: 4, color: "#444" }}>
                     Text: “{it.customText}” • Font: {it.font || "Default"}
                   </div>
                 ) : null}
+
                 {it.uploadUrl ? (
-                  <div style={{ marginTop: 4, color: "#444" }}>Upload: {it.uploadUrl}</div>
+                  <div style={{ marginTop: 6 }}>
+                    Upload: <span style={{ color: "#555" }}>{it.uploadUrl}</span>
+                  </div>
                 ) : null}
               </td>
-              <td style={{ textAlign: "right", padding: "10px 0", borderBottom: "1px solid #eee" }}>
-                {it.qty}
+
+              <td style={{ padding: "10px 0", borderBottom: "1px solid #eee" }}>
+                {it.quantity}
               </td>
-              <td style={{ textAlign: "right", padding: "10px 0", borderBottom: "1px solid #eee" }}>
-                {money(it.unitPrice * it.qty)}
+              <td style={{ padding: "10px 0", borderBottom: "1px solid #eee" }}>
+                {money(it.unitPrice)}
+              </td>
+              <td style={{ padding: "10px 0", borderBottom: "1px solid #eee" }}>
+                {money(it.lineTotal)}
               </td>
             </tr>
           ))}
@@ -108,14 +143,16 @@ export default async function PackingSlipPage({ params }: { params: { id: string
       <div style={{ marginTop: 16, textAlign: "right" }}>
         <div>Subtotal: {money(order.subtotal)}</div>
         <div>Shipping: {money(order.shipping)}</div>
-        <div style={{ fontSize: 18, fontWeight: 900, marginTop: 6 }}>Total: {money(order.total)}</div>
+        <div style={{ fontSize: 18, fontWeight: 900, marginTop: 6 }}>
+          Total: {money(order.total)}
+        </div>
       </div>
 
-      {order.trackingNumber ? (
-        <div style={{ marginTop: 16 }}>
-          <strong>Tracking:</strong> {order.trackingNumber}
-        </div>
-      ) : null}
+      <hr style={{ margin: "20px 0" }} />
+
+      <div style={{ fontSize: 12, color: "#555" }}>
+        <div>Generated by Generations in Making admin.</div>
+      </div>
     </div>
   );
 }

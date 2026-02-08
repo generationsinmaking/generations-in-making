@@ -6,38 +6,65 @@ import { redisGet, redisSet, redisDel } from "@/lib/orderStore";
 const COOKIE_NAME = "gim_admin_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
-function getCountry(req: NextRequest) {
-  // Vercel sets this on edge/proxy
-  return (
-    req.headers.get("x-vercel-ip-country") ||
-    req.headers.get("cf-ipcountry") ||
-    ""
-  ).toUpperCase();
-}
+type AdminAuthOk = { ok: true };
+type AdminAuthFail = { ok: false; status: number; message: string };
+export type AdminAuthResult = AdminAuthOk | AdminAuthFail;
 
-export function checkUkLock(req: NextRequest) {
-  if (process.env.ADMIN_UK_ONLY !== "1") return { ok: true as const };
-  const country = getCountry(req);
-  if (country === "GB") return { ok: true as const };
-  return { ok: false as const, message: "UK-only admin lock enabled." };
-}
+type UkLockOk = { ok: true };
+type UkLockFail = { ok: false; message: string };
+export type UkLockResult = UkLockOk | UkLockFail;
 
 function randomId() {
-  // simple strong-enough session id for this use case
-  return crypto.randomUUID();
+  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
+
+function getClientIp(req: NextRequest) {
+  const xf = req.headers.get("x-forwarded-for");
+  if (xf) return xf.split(",")[0]?.trim() || "";
+  return req.headers.get("x-real-ip") || "";
+}
+
+/**
+ * Optional IP allowlist. Set:
+ * ADMIN_IP_ALLOWLIST="1.2.3.4,5.6.7.8"
+ * If empty/not set => allow all IPs.
+ */
+function isAllowlisted(ip: string) {
+  const allow = (process.env.ADMIN_IP_ALLOWLIST || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (allow.length === 0) return true;
+  return allow.includes(ip);
+}
+
+/**
+ * ✅ This matches what your /api/admin/login route expects:
+ * returns { ok: true } OR { ok: false, message }
+ */
+export function checkUkLock(req: NextRequest): UkLockResult {
+  const ip = getClientIp(req);
+
+  if (!isAllowlisted(ip)) {
+    return { ok: false, message: "Admin access blocked by IP allowlist" };
+  }
+
+  return { ok: true };
 }
 
 export async function createAdminSession() {
   const sessionId = randomId();
-  await redisSet(`admin_session:${sessionId}`, "1", SESSION_TTL_SECONDS);
+
+  await redisSet(`admin_session:${sessionId}`, "1", { ex: SESSION_TTL_SECONDS });
 
   const jar = await cookies();
   jar.set({
     name: COOKIE_NAME,
     value: sessionId,
     httpOnly: true,
-    secure: true, // important on production https
     sameSite: "lax",
+    secure: true,
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
   });
@@ -45,32 +72,45 @@ export async function createAdminSession() {
   return sessionId;
 }
 
-export async function destroyAdminSession(req?: NextRequest) {
+export async function destroyAdminSession() {
   const jar = await cookies();
   const sessionId = jar.get(COOKIE_NAME)?.value;
-  if (sessionId) await redisDel(`admin_session:${sessionId}`);
+
+  if (sessionId) {
+    await redisDel(`admin_session:${sessionId}`);
+  }
 
   jar.set({
     name: COOKIE_NAME,
     value: "",
     httpOnly: true,
-    secure: true,
     sameSite: "lax",
+    secure: true,
     path: "/",
     maxAge: 0,
   });
 }
 
-export async function requireAdmin(req: NextRequest) {
-  const uk = checkUkLock(req);
-  if (!uk.ok) return { ok: false as const, status: 403, message: uk.message };
-
+/**
+ * Used by admin API routes.
+ * Returns { ok:false, status, message } so routes can respond consistently.
+ */
+export async function requireAdmin(req: NextRequest): Promise<AdminAuthResult> {
   const jar = await cookies();
-  const sessionId = jar.get(COOKIE_NAME)?.value;
-  if (!sessionId) return { ok: false as const, status: 401, message: "Unauthorized" };
+  const sessionId = jar.get(COOKIE_NAME)?.value || "";
+  if (!sessionId) {
+    return { ok: false, status: 401, message: "No admin session" };
+  }
 
-  const exists = await redisGet(`admin_session:${sessionId}`);
-  if (!exists) return { ok: false as const, status: 401, message: "Unauthorized" };
+  const uk = checkUkLock(req);
+  if (!uk.ok) {
+    return { ok: false, status: 403, message: uk.message };
+  }
 
-  return { ok: true as const, sessionId };
+  const v = await redisGet<string>(`admin_session:${sessionId}`);
+  if (v !== "1") {
+    return { ok: false, status: 401, message: "Invalid/expired admin session" };
+  }
+
+  return { ok: true };
 }
