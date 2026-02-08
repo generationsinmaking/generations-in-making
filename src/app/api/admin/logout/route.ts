@@ -1,13 +1,10 @@
+// src/app/api/admin/logout/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { clearAdminCookie, deleteAdminSession, getSessionId } from "@/lib/adminAuth";
+import { destroyAdminSession } from "@/lib/adminAuth";
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
-  const sessionId = getSessionId(req);
-  await deleteAdminSession(sessionId);
-
-  const res = NextResponse.json({ ok: true });
-  clearAdminCookie(res);
-  return res;
+export async function POST(_req: NextRequest) {
+  await destroyAdminSession();
+  return NextResponse.json({ ok: true });
 }

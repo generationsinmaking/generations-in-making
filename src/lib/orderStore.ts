@@ -1,106 +1,141 @@
 // src/lib/orderStore.ts
-import { Redis } from "@upstash/redis";
-
-export const runtime = "nodejs";
-
-export type OrderStatus = "pending" | "paid" | "shipped" | "cancelled";
+export type OrderStatus = "paid" | "shipped" | "refunded" | "cancelled";
 
 export type ShippingAddress = {
-  name?: string | null;
-  line1?: string | null;
-  line2?: string | null;
-  city?: string | null;
-  state?: string | null;
-  postal_code?: string | null;
-  country?: string | null;
-  phone?: string | null;
+  name?: string;
+  phone?: string;
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  country?: string;
 };
 
-export type StoredOrderItem = {
-  id: string;
+export type OrderItem = {
   name: string;
   qty: number;
-  unitPrice: number;
-  uploadUrl?: string | null;
-  customText?: string | null;
-  font?: string | null;
+  unitPrice: number; // in major currency units (e.g. 4.00)
+  lineTotal: number;
+  imageUrl?: string;
+  uploadUrl?: string;
 };
 
 export type StoredOrder = {
   id: string;
-  createdAt: string;
+  createdAt: string; // ISO string
   status: OrderStatus;
-
-  customerEmail: string;
-
+  currency: string; // "gbp"
   subtotal: number;
-  shippingCost: number;
+  shipping: number;
   total: number;
 
-  shippingZone?: string;
-  shippingAddress?: ShippingAddress | null;
+  customerEmail?: string;
+  stripeSessionId?: string;
 
-  stripeSessionId: string;
+  shippingAddress?: ShippingAddress;
 
-  items: StoredOrderItem[];
+  items: OrderItem[];
 
-  trackingNumber?: string | null;
-  shippedAt?: string | null;
+  trackingNumber?: string;
 };
 
-function getRedis() {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "";
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "";
 
-  if (!url || !token) {
-    throw new Error(
-      "Missing Upstash Redis env vars (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN)"
-    );
+function requireRedis() {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+    throw new Error("Missing Upstash env vars (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN).");
   }
-
-  return new Redis({ url, token });
 }
 
-const ORDER_KEY = (id: string) => `order:${id}`;
-const ORDER_INDEX = `orders:index`;
+async function redisFetch(path: string, init?: RequestInit) {
+  requireRedis();
+  const res = await fetch(`${UPSTASH_URL}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${UPSTASH_TOKEN}`,
+      "Content-Type": "application/json",
+      ...(init?.headers || {}),
+    },
+    cache: "no-store",
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(json?.error || `Redis request failed: ${res.status}`);
+  }
+  return json;
+}
+
+/** Basic helpers used by admin auth too */
+export async function redisGet(key: string): Promise<string | null> {
+  const j = await redisFetch(`/get/${encodeURIComponent(key)}`, { method: "GET" });
+  return j?.result ?? null;
+}
+export async function redisSet(key: string, value: string, exSeconds?: number) {
+  const body = exSeconds ? { value, ex: exSeconds } : { value };
+  await redisFetch(`/set/${encodeURIComponent(key)}`, { method: "POST", body: JSON.stringify(body) });
+}
+export async function redisDel(key: string) {
+  await redisFetch(`/del/${encodeURIComponent(key)}`, { method: "POST" });
+}
+
+function orderKey(id: string) {
+  return `order:${id}`;
+}
+
+// store ids in a sorted set by createdAt timestamp
+async function zadd(setKey: string, score: number, member: string) {
+  await redisFetch(`/zadd/${encodeURIComponent(setKey)}`, {
+    method: "POST",
+    body: JSON.stringify([score, member]),
+  });
+}
+
+async function zrange(setKey: string, start: number, stop: number, rev = true) {
+  const cmd = rev ? "zrevrange" : "zrange";
+  const j = await redisFetch(`/${cmd}/${encodeURIComponent(setKey)}/${start}/${stop}`, { method: "GET" });
+  return (j?.result || []) as string[];
+}
 
 export async function saveOrder(order: StoredOrder) {
-  const redis = getRedis();
-  await redis.set(ORDER_KEY(order.id), order);
   const score = Date.parse(order.createdAt) || Date.now();
-  await redis.zadd(ORDER_INDEX, { score, member: order.id });
+  await redisSet(orderKey(order.id), JSON.stringify(order));
+  await zadd("orders", score, order.id);
+  return { ok: true as const };
 }
 
 export async function getOrder(id: string): Promise<StoredOrder | null> {
-  const redis = getRedis();
-  const order = await redis.get<StoredOrder>(ORDER_KEY(id));
-  return order ?? null;
+  const raw = await redisGet(orderKey(id));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as StoredOrder;
+  } catch {
+    return null;
+  }
 }
 
-export async function listOrders(limit = 100): Promise<StoredOrder[]> {
-  const redis = getRedis();
-  const ids = await redis.zrange<string[]>(ORDER_INDEX, 0, limit - 1, { rev: true });
-  if (!ids?.length) return [];
-
-  const keys = ids.map((id) => ORDER_KEY(id));
-  const orders = await redis.mget<StoredOrder[]>(...keys);
-  return (orders || []).filter(Boolean) as StoredOrder[];
+export async function listOrders(limit = 200): Promise<StoredOrder[]> {
+  const ids = await zrange("orders", 0, Math.max(0, limit - 1), true);
+  const out: StoredOrder[] = [];
+  for (const id of ids) {
+    const o = await getOrder(id);
+    if (o) out.push(o);
+  }
+  return out;
 }
 
-export type UpdateOrderResult =
-  | { ok: true; order: StoredOrder }
-  | { ok: false; message: string };
+export async function updateOrderStatus(id: string, status: OrderStatus, trackingNumber?: string) {
+  const existing = await getOrder(id);
+  if (!existing) return { ok: false as const, message: "Order not found" };
 
-export async function updateOrder(
-  id: string,
-  patch: Partial<StoredOrder>
-): Promise<UpdateOrderResult> {
-  const redis = getRedis();
-  const existing = await redis.get<StoredOrder>(ORDER_KEY(id));
-  if (!existing) return { ok: false, message: "Order not found" };
+  const next: StoredOrder = {
+    ...existing,
+    status,
+    trackingNumber: trackingNumber ?? existing.trackingNumber,
+  };
 
-  const updated: StoredOrder = { ...existing, ...patch };
-  await redis.set(ORDER_KEY(id), updated);
-
-  return { ok: true, order: updated };
+  await redisSet(orderKey(id), JSON.stringify(next));
+  return { ok: true as const, order: next };
 }
