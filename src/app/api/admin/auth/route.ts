@@ -1,36 +1,13 @@
 // src/app/api/admin/auth/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requireAdmin, runtime } from "@/lib/adminAuth";
 
-export const runtime = "nodejs";
+export { runtime };
 
-export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({}));
-  const token = String(body?.token || "");
-  const expected = process.env.ADMIN_TOKEN || "";
-
-  if (!expected) {
-    return NextResponse.json({ error: "Missing ADMIN_TOKEN env var" }, { status: 500 });
+export async function GET(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false }, { status: auth.status });
   }
-
-  if (!token || token !== expected) {
-    return NextResponse.json({ ok: false }, { status: 401 });
-  }
-
-  const res = NextResponse.json({ ok: true });
-
-  res.cookies.set("gim_admin", token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 30, // 30 days
-  });
-
-  return res;
-}
-
-export async function DELETE() {
-  const res = NextResponse.json({ ok: true });
-  res.cookies.set("gim_admin", "", { path: "/", maxAge: 0 });
-  return res;
+  return NextResponse.json({ ok: true });
 }

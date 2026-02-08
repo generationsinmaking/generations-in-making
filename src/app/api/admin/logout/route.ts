@@ -1,20 +1,19 @@
 // src/app/api/admin/logout/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import {
+  clearAdminCookie,
+  deleteAdminSession,
+  getSessionId,
+  runtime,
+} from "@/lib/adminAuth";
 
-const COOKIE_NAME = "gim_admin";
+export { runtime };
 
-export const runtime = "nodejs";
+export async function POST(req: NextRequest) {
+  const sessionId = getSessionId(req);
+  await deleteAdminSession(sessionId);
 
-export async function POST() {
   const res = NextResponse.json({ ok: true });
-  res.cookies.set({
-    name: COOKIE_NAME,
-    value: "",
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 0,
-  });
+  clearAdminCookie(res);
   return res;
 }

@@ -1,64 +1,34 @@
 // src/app/api/admin/orders/status/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { updateOrder, type OrderStatus } from "@/lib/orderStore";
-import { sendOrderEmails } from "@/lib/email";
+import { requireAdmin, runtime } from "@/lib/adminAuth";
 
-export const runtime = "nodejs";
-
-function isAdminAllowed(req: NextRequest) {
-  if (process.env.ADMIN_UK_ONLY === "1") {
-    const country = req.headers.get("x-vercel-ip-country");
-    if (country && country !== "GB") return false;
-  }
-  return true;
-}
-
-function isAuthed(req: NextRequest) {
-  const token = req.headers.get("x-admin-token") || "";
-  return token && token === process.env.ADMIN_TOKEN;
-}
+export { runtime };
 
 export async function POST(req: NextRequest) {
-  if (!isAdminAllowed(req)) {
-    return NextResponse.json({ error: "Admin is restricted" }, { status: 403 });
-  }
-  if (!isAuthed(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireAdmin(req);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.message }, { status: auth.status });
   }
 
-  const body = (await req.json().catch(() => null)) as
-    | { id?: string; status?: OrderStatus; trackingNumber?: string }
-    | null;
+  const body = await req.json().catch(() => ({}));
+  const id = String(body?.id || "").trim();
+  const status = String(body?.status || "").trim() as OrderStatus;
+  const trackingNumber = body?.trackingNumber ? String(body.trackingNumber).trim() : undefined;
 
-  const id = body?.id;
-  const status = body?.status;
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+  if (!status) return NextResponse.json({ error: "Missing status" }, { status: 400 });
 
-  if (!id || !status) {
-    return NextResponse.json({ error: "Missing id/status" }, { status: 400 });
-  }
-
-  const patch: { status: OrderStatus; trackingNumber?: string | null; shippedAt?: string | null } = {
-    status,
-  };
-
-  if (typeof body?.trackingNumber === "string" && body.trackingNumber.trim()) {
-    patch.trackingNumber = body.trackingNumber.trim();
-  }
+  const patch: Record<string, any> = { status };
 
   if (status === "shipped") {
     patch.shippedAt = new Date().toISOString();
-  } else {
-    patch.shippedAt = null;
+    if (trackingNumber) patch.trackingNumber = trackingNumber;
   }
 
   const result = await updateOrder(id, patch);
   if (!result.ok) {
     return NextResponse.json({ error: result.message }, { status: 404 });
-  }
-
-  // If you want emails when marked shipped:
-  if (status === "shipped") {
-    await sendOrderEmails({ order: result.order, type: "shipped" });
   }
 
   return NextResponse.json({ ok: true, order: result.order });
