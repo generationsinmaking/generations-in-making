@@ -3,8 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
 import crypto from "crypto";
 
-export const runtime = "nodejs";
-
 const COOKIE_NAME = "gim_admin_session";
 const SESSION_PREFIX = "admin:session:";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -25,7 +23,6 @@ function isUkOnlyEnabled() {
 }
 
 function getCountry(req: NextRequest) {
-  // Vercel sets this on Edge/Node
   return (
     req.headers.get("x-vercel-ip-country") ||
     req.headers.get("cf-ipcountry") ||
@@ -37,7 +34,6 @@ export function checkUkLock(req: NextRequest) {
   if (!isUkOnlyEnabled()) return { ok: true as const };
 
   const country = getCountry(req);
-  // Allow GB only (UK)
   if (country && country !== "GB") {
     return { ok: false as const, message: "UK-only admin lock enabled." };
   }

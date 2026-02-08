@@ -1,8 +1,7 @@
-// src/app/api/admin/auth/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin, runtime } from "@/lib/adminAuth";
+import { requireAdmin } from "@/lib/adminAuth";
 
-export { runtime };
+export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
   const auth = await requireAdmin(req);

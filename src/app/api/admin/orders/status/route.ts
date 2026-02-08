@@ -1,9 +1,8 @@
-// src/app/api/admin/orders/status/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { updateOrder, type OrderStatus } from "@/lib/orderStore";
-import { requireAdmin, runtime } from "@/lib/adminAuth";
+import { requireAdmin } from "@/lib/adminAuth";
 
-export { runtime };
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -14,7 +13,9 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const id = String(body?.id || "").trim();
   const status = String(body?.status || "").trim() as OrderStatus;
-  const trackingNumber = body?.trackingNumber ? String(body.trackingNumber).trim() : undefined;
+  const trackingNumber = body?.trackingNumber
+    ? String(body.trackingNumber).trim()
+    : undefined;
 
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
   if (!status) return NextResponse.json({ error: "Missing status" }, { status: 400 });

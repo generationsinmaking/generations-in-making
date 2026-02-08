@@ -1,13 +1,7 @@
-// src/app/api/admin/login/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import {
-  createAdminSession,
-  setAdminCookie,
-  checkUkLock,
-  runtime,
-} from "@/lib/adminAuth";
+import { createAdminSession, setAdminCookie, checkUkLock } from "@/lib/adminAuth";
 
-export { runtime };
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   const uk = checkUkLock(req);
@@ -32,7 +26,6 @@ export async function POST(req: NextRequest) {
 
   const sessionId = await createAdminSession();
   const res = NextResponse.json({ ok: true });
-
   setAdminCookie(res, sessionId);
   return res;
 }
