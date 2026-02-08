@@ -19,6 +19,10 @@ export type OrderItem = {
   lineTotal: number;
   imageUrl?: string;
   uploadUrl?: string;
+
+  // Optional personalisation fields (used by packing slip / custom products)
+  customText?: string;
+  font?: string;
 };
 
 export type StoredOrder = {
@@ -40,12 +44,16 @@ export type StoredOrder = {
   trackingNumber?: string;
 };
 
-const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "";
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "";
+const UPSTASH_URL =
+  process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "";
+const UPSTASH_TOKEN =
+  process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "";
 
 function requireRedis() {
   if (!UPSTASH_URL || !UPSTASH_TOKEN) {
-    throw new Error("Missing Upstash env vars (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN).");
+    throw new Error(
+      "Missing Upstash env vars (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN)."
+    );
   }
 }
 
@@ -70,13 +78,20 @@ async function redisFetch(path: string, init?: RequestInit) {
 
 /** Basic helpers used by admin auth too */
 export async function redisGet(key: string): Promise<string | null> {
-  const j = await redisFetch(`/get/${encodeURIComponent(key)}`, { method: "GET" });
+  const j = await redisFetch(`/get/${encodeURIComponent(key)}`, {
+    method: "GET",
+  });
   return j?.result ?? null;
 }
+
 export async function redisSet(key: string, value: string, exSeconds?: number) {
   const body = exSeconds ? { value, ex: exSeconds } : { value };
-  await redisFetch(`/set/${encodeURIComponent(key)}`, { method: "POST", body: JSON.stringify(body) });
+  await redisFetch(`/set/${encodeURIComponent(key)}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
+
 export async function redisDel(key: string) {
   await redisFetch(`/del/${encodeURIComponent(key)}`, { method: "POST" });
 }
@@ -95,7 +110,10 @@ async function zadd(setKey: string, score: number, member: string) {
 
 async function zrange(setKey: string, start: number, stop: number, rev = true) {
   const cmd = rev ? "zrevrange" : "zrange";
-  const j = await redisFetch(`/${cmd}/${encodeURIComponent(setKey)}/${start}/${stop}`, { method: "GET" });
+  const j = await redisFetch(
+    `/${cmd}/${encodeURIComponent(setKey)}/${start}/${stop}`,
+    { method: "GET" }
+  );
   return (j?.result || []) as string[];
 }
 
@@ -126,7 +144,11 @@ export async function listOrders(limit = 200): Promise<StoredOrder[]> {
   return out;
 }
 
-export async function updateOrderStatus(id: string, status: OrderStatus, trackingNumber?: string) {
+export async function updateOrderStatus(
+  id: string,
+  status: OrderStatus,
+  trackingNumber?: string
+) {
   const existing = await getOrder(id);
   if (!existing) return { ok: false as const, message: "Order not found" };
 
