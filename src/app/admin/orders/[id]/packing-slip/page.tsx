@@ -107,7 +107,7 @@ export default async function PackingSlipPage({ params }: { params: { id: string
 
       <div style={{ marginTop: 16, textAlign: "right" }}>
         <div>Subtotal: {money(order.subtotal)}</div>
-        <div>Shipping: {money(order.shippingCost)}</div>
+        <div>Shipping: {money(order.shipping)}</div>
         <div style={{ fontSize: 18, fontWeight: 900, marginTop: 6 }}>Total: {money(order.total)}</div>
       </div>
 
